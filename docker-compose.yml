@@ -1,0 +1,50 @@
+services:
+  mysql:
+    image: mysql:8.4.4
+    container_name: codepilot-mysql
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-codepilot_root_dev_password}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-codepilot_ai}
+      MYSQL_USER: ${MYSQL_USER:-codepilot}
+      MYSQL_PASSWORD: ${MYSQL_PASSWORD:-codepilot_dev_password}
+    ports:
+      - '127.0.0.1:3306:3306'
+    volumes:
+      - codepilot_mysql_data:/var/lib/mysql
+    healthcheck:
+      test: ['CMD-SHELL', 'mysqladmin ping -h 127.0.0.1 -u$$MYSQL_USER -p$$MYSQL_PASSWORD --silent']
+      interval: 10s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  backend:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: codepilot-backend
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 4000
+      APP_URL: http://localhost:4000
+      FRONTEND_ORIGIN: http://localhost:3000
+      DATABASE_URL: mysql://${MYSQL_USER:-codepilot}:${MYSQL_PASSWORD:-codepilot_dev_password}@mysql:3306/${MYSQL_DATABASE:-codepilot_ai}
+      SESSION_SECRET: ${SESSION_SECRET:-local-docker-compose-session-secret-change-for-production-2026}
+      COOKIE_SECURE: 'false'
+      LOG_LEVEL: info
+    ports:
+      - '127.0.0.1:4000:4000'
+    healthcheck:
+      test: ['CMD-SHELL', 'curl -fsS http://127.0.0.1:4000/api/v1/health/ready || exit 1']
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+volumes:
+  codepilot_mysql_data:

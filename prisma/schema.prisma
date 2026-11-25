@@ -1,0 +1,435 @@
+generator client {
+  provider = "prisma-client"
+  output   = "../src/generated/prisma"
+}
+
+datasource db {
+  provider = "mysql"
+}
+
+enum WorkspaceMemberStatus {
+  ACTIVE
+  SUSPENDED
+  REMOVED
+}
+
+enum WorkspaceInvitationStatus {
+  PENDING
+  ACCEPTED
+  REVOKED
+  EXPIRED
+}
+
+enum RoleScope {
+  PLATFORM
+  WORKSPACE
+}
+
+enum AuditOutcome {
+  SUCCESS
+  FAILURE
+  DENIED
+}
+
+enum NotificationSeverity {
+  INFO
+  WARNING
+  CRITICAL
+}
+
+enum GithubInstallationStatus {
+  ACTIVE
+  SUSPENDED
+  REVOKED
+}
+
+enum RepositoryVisibility {
+  PUBLIC
+  PRIVATE
+  INTERNAL
+}
+
+// ============================================================================
+// Migration Group 001 — Identity
+// ============================================================================
+
+model User {
+  id              String    @id @default(uuid()) @db.Char(36)
+  email           String    @unique(map: "users_email_key") @db.VarChar(255)
+  passwordHash    String    @map("password_hash") @db.VarChar(255)
+  fullName        String    @map("full_name") @db.VarChar(150)
+  avatarUrl       String?   @map("avatar_url") @db.VarChar(500)
+  isPlatformAdmin Boolean   @default(false) @map("is_platform_admin")
+  isActive        Boolean   @default(true) @map("is_active")
+  emailVerifiedAt DateTime? @map("email_verified_at") @db.DateTime(3)
+  lastLoginAt     DateTime? @map("last_login_at") @db.DateTime(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  identities            UserIdentity[]
+  sessions              Session[]
+  refreshTokens         RefreshToken[]
+  createdWorkspaces     Workspace[]           @relation("WorkspaceCreator")
+  workspaceMemberships  WorkspaceMember[]
+  sentInvitations       WorkspaceInvitation[] @relation("InvitationSender")
+  auditLogs             AuditLog[]            @relation("AuditActor")
+  notifications         Notification[]
+  installedGithubApps   GithubInstallation[]  @relation("GithubInstaller")
+
+  @@index([isActive], map: "users_is_active_idx")
+  @@map("users")
+}
+
+model UserIdentity {
+  id                String   @id @default(uuid()) @db.Char(36)
+  userId            String   @map("user_id") @db.Char(36)
+  provider          String   @db.VarChar(64)
+  providerAccountId String   @map("provider_account_id") @db.VarChar(191)
+  providerUsername  String?  @map("provider_username") @db.VarChar(191)
+  createdAt         DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade, map: "user_identities_user_id_fkey")
+
+  @@unique([provider, providerAccountId], map: "user_identities_provider_account_key")
+  @@index([userId], map: "user_identities_user_id_idx")
+  @@map("user_identities")
+}
+
+model Session {
+  id               String    @id @default(uuid()) @db.Char(36)
+  userId           String    @map("user_id") @db.Char(36)
+  sessionTokenHash String    @unique(map: "sessions_token_hash_key") @map("session_token_hash") @db.Char(64)
+  csrfTokenHash    String    @map("csrf_token_hash") @db.Char(64)
+  ipAddress        String?   @map("ip_address") @db.VarChar(64)
+  userAgent        String?   @map("user_agent") @db.VarChar(512)
+  expiresAt        DateTime  @map("expires_at") @db.DateTime(3)
+  revokedAt        DateTime? @map("revoked_at") @db.DateTime(3)
+  lastActiveAt     DateTime  @default(now()) @map("last_active_at") @db.DateTime(3)
+  createdAt        DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade, map: "sessions_user_id_fkey")
+  refreshTokens RefreshToken[]
+
+  @@index([userId, expiresAt], map: "sessions_user_id_expires_at_idx")
+  @@map("sessions")
+}
+
+model RefreshToken {
+  id           String    @id @default(uuid()) @db.Char(36)
+  sessionId    String    @map("session_id") @db.Char(36)
+  userId       String    @map("user_id") @db.Char(36)
+  tokenHash    String    @unique(map: "refresh_tokens_token_hash_key") @map("token_hash") @db.Char(64)
+  familyId     String    @map("family_id") @db.Char(36)
+  replacedById String?   @map("replaced_by_id") @db.Char(36)
+  expiresAt    DateTime  @map("expires_at") @db.DateTime(3)
+  revokedAt    DateTime? @map("revoked_at") @db.DateTime(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  session Session @relation(fields: [sessionId], references: [id], onDelete: Cascade, map: "refresh_tokens_session_id_fkey")
+  user    User    @relation(fields: [userId], references: [id], onDelete: Cascade, map: "refresh_tokens_user_id_fkey")
+
+  @@index([familyId], map: "refresh_tokens_family_id_idx")
+  @@index([sessionId], map: "refresh_tokens_session_id_idx")
+  @@index([userId, expiresAt], map: "refresh_tokens_user_id_expires_at_idx")
+  @@map("refresh_tokens")
+}
+
+// ============================================================================
+// Migration Group 002 — Multi-tenancy
+// ============================================================================
+
+model Workspace {
+  id              String    @id @default(uuid()) @db.Char(36)
+  name            String    @db.VarChar(120)
+  slug            String    @unique(map: "workspaces_slug_key") @db.VarChar(100)
+  description     String?   @db.VarChar(500)
+  planTier        String    @default("SANDBOX") @map("plan_tier") @db.VarChar(32)
+  createdByUserId String    @map("created_by_user_id") @db.Char(36)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+  archivedAt      DateTime? @map("archived_at") @db.DateTime(3)
+
+  createdBy           User                  @relation("WorkspaceCreator", fields: [createdByUserId], references: [id], onDelete: Restrict, map: "workspaces_created_by_user_id_fkey")
+  members             WorkspaceMember[]
+  invitations         WorkspaceInvitation[]
+  settings            WorkspaceSetting?
+  usageLimit          UsageLimit?
+  auditLogs           AuditLog[]
+  notifications       Notification[]
+  githubInstallations GithubInstallation[]
+  repositories        Repository[]
+
+  @@index([createdByUserId], map: "workspaces_created_by_user_id_idx")
+  @@map("workspaces")
+}
+
+model WorkspaceMember {
+  id          String                @id @default(uuid()) @db.Char(36)
+  workspaceId String                @map("workspace_id") @db.Char(36)
+  userId      String                @map("user_id") @db.Char(36)
+  roleKey     String                @map("role_key") @db.VarChar(64)
+  status      WorkspaceMemberStatus @default(ACTIVE)
+  joinedAt    DateTime              @default(now()) @map("joined_at") @db.DateTime(3)
+  createdAt   DateTime              @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime              @updatedAt @map("updated_at") @db.DateTime(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "workspace_members_workspace_id_fkey")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade, map: "workspace_members_user_id_fkey")
+  role      Role      @relation(fields: [roleKey], references: [key], onDelete: Restrict, map: "workspace_members_role_key_fkey")
+
+  @@unique([workspaceId, userId], map: "workspace_members_workspace_user_key")
+  @@unique([workspaceId, id], map: "workspace_members_workspace_id_id_key")
+  @@index([userId, status], map: "workspace_members_user_id_status_idx")
+  @@index([roleKey], map: "workspace_members_role_key_idx")
+  @@map("workspace_members")
+}
+
+model WorkspaceInvitation {
+  id              String                    @id @default(uuid()) @db.Char(36)
+  workspaceId     String                    @map("workspace_id") @db.Char(36)
+  email           String                    @db.VarChar(255)
+  roleKey         String                    @map("role_key") @db.VarChar(64)
+  tokenHash       String                    @unique(map: "workspace_invitations_token_hash_key") @map("token_hash") @db.Char(64)
+  invitedByUserId String                    @map("invited_by_user_id") @db.Char(36)
+  status          WorkspaceInvitationStatus @default(PENDING)
+  expiresAt       DateTime                  @map("expires_at") @db.DateTime(3)
+  acceptedAt      DateTime?                 @map("accepted_at") @db.DateTime(3)
+  createdAt       DateTime                  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime                  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "workspace_invitations_workspace_id_fkey")
+  invitedBy User      @relation("InvitationSender", fields: [invitedByUserId], references: [id], onDelete: Restrict, map: "workspace_invitations_invited_by_user_id_fkey")
+  role      Role      @relation(fields: [roleKey], references: [key], onDelete: Restrict, map: "workspace_invitations_role_key_fkey")
+
+  @@index([workspaceId, email, status], map: "workspace_invitations_ws_email_status_idx")
+  @@index([invitedByUserId], map: "workspace_invitations_invited_by_idx")
+  @@index([roleKey], map: "workspace_invitations_role_key_idx")
+  @@map("workspace_invitations")
+}
+
+// ============================================================================
+// Migration Group 003 — Authorization
+// ============================================================================
+
+model Role {
+  id          String    @id @default(uuid()) @db.Char(36)
+  key         String    @unique(map: "roles_key_key") @db.VarChar(64)
+  name        String    @db.VarChar(100)
+  scope       RoleScope
+  description String    @db.VarChar(500)
+  isSystem    Boolean   @default(true) @map("is_system")
+  createdAt   DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  rolePermissions RolePermission[]
+  members         WorkspaceMember[]
+  invitations     WorkspaceInvitation[]
+
+  @@map("roles")
+}
+
+model Permission {
+  id          String   @id @default(uuid()) @db.Char(36)
+  key         String   @unique(map: "permissions_key_key") @db.VarChar(100)
+  resource    String   @db.VarChar(64)
+  action      String   @db.VarChar(64)
+  description String   @db.VarChar(500)
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  rolePermissions RolePermission[]
+
+  @@index([resource, action], map: "permissions_resource_action_idx")
+  @@map("permissions")
+}
+
+model RolePermission {
+  roleId       String   @map("role_id") @db.Char(36)
+  permissionId String   @map("permission_id") @db.Char(36)
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade, map: "role_permissions_role_id_fkey")
+  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade, map: "role_permissions_permission_id_fkey")
+
+  @@id([roleId, permissionId])
+  @@index([permissionId], map: "role_permissions_permission_id_idx")
+  @@map("role_permissions")
+}
+
+// ============================================================================
+// Migration Group 004 — Application Operations
+// ============================================================================
+
+model WorkspaceSetting {
+  id                     String   @id @default(uuid()) @db.Char(36)
+  workspaceId            String   @unique(map: "workspace_settings_workspace_id_key") @map("workspace_id") @db.Char(36)
+  defaultAiProvider      String   @default("mock") @map("default_ai_provider") @db.VarChar(64)
+  allowedAiProvidersJson Json     @map("allowed_ai_providers_json")
+  requireHumanApproval   Boolean  @default(true) @map("require_human_approval")
+  autoReviewEnabled      Boolean  @default(false) @map("auto_review_enabled")
+  dataRetentionDays      Int      @default(90) @map("data_retention_days")
+  createdAt              DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt              DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "workspace_settings_workspace_id_fkey")
+
+  @@map("workspace_settings")
+}
+
+model UsageLimit {
+  id                   String   @id @default(uuid()) @db.Char(36)
+  workspaceId          String   @unique(map: "usage_limits_workspace_id_key") @map("workspace_id") @db.Char(36)
+  monthlyAiBudgetUsd   Decimal  @default(25.0000) @map("monthly_ai_budget_usd") @db.Decimal(12, 4)
+  maxMonthlyTokens     Int      @default(2000000) @map("max_monthly_tokens")
+  maxRepositories      Int      @default(25) @map("max_repositories")
+  maxMembers           Int      @default(25) @map("max_members")
+  currentMonthTokens   Int      @default(0) @map("current_month_tokens")
+  currentMonthSpendUsd Decimal  @default(0.0000) @map("current_month_spend_usd") @db.Decimal(12, 4)
+  periodStartAt        DateTime @default(now()) @map("period_start_at") @db.DateTime(3)
+  createdAt            DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "usage_limits_workspace_id_fkey")
+
+  @@map("usage_limits")
+}
+
+model AuditLog {
+  id            String       @id @default(uuid()) @db.Char(36)
+  workspaceId   String?      @map("workspace_id") @db.Char(36)
+  actorUserId   String?      @map("actor_user_id") @db.Char(36)
+  action        String       @db.VarChar(120)
+  resourceType  String       @map("resource_type") @db.VarChar(64)
+  resourceId    String?      @map("resource_id") @db.VarChar(128)
+  outcome       AuditOutcome
+  correlationId String       @map("correlation_id") @db.VarChar(64)
+  ipAddress     String?      @map("ip_address") @db.VarChar(64)
+  userAgent     String?      @map("user_agent") @db.VarChar(512)
+  metadataJson  Json?        @map("metadata_json")
+  createdAt     DateTime     @default(now()) @map("created_at") @db.DateTime(3)
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull, map: "audit_logs_workspace_id_fkey")
+  actor     User?      @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull, map: "audit_logs_actor_user_id_fkey")
+
+  @@index([workspaceId, createdAt(sort: Desc), id], map: "audit_logs_workspace_created_id_idx")
+  @@index([actorUserId, createdAt(sort: Desc)], map: "audit_logs_actor_created_idx")
+  @@index([action, createdAt(sort: Desc)], map: "audit_logs_action_created_idx")
+  @@map("audit_logs")
+}
+
+model Notification {
+  id           String               @id @default(uuid()) @db.Char(36)
+  workspaceId  String               @map("workspace_id") @db.Char(36)
+  userId       String               @map("user_id") @db.Char(36)
+  type         String               @db.VarChar(64)
+  severity     NotificationSeverity @default(INFO)
+  title        String               @db.VarChar(200)
+  body         String               @db.Text
+  linkPath     String?              @map("link_path") @db.VarChar(255)
+  metadataJson Json?                @map("metadata_json")
+  readAt       DateTime?            @map("read_at") @db.DateTime(3)
+  createdAt    DateTime             @default(now()) @map("created_at") @db.DateTime(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "notifications_workspace_id_fkey")
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade, map: "notifications_user_id_fkey")
+
+  @@index([workspaceId, userId, createdAt(sort: Desc), id], map: "notifications_ws_user_created_id_idx")
+  @@index([userId, readAt], map: "notifications_user_read_idx")
+  @@map("notifications")
+}
+
+// ============================================================================
+// Migration Group 005 — Repository Foundation
+// ============================================================================
+
+model GithubInstallation {
+  id                   String                   @id @default(uuid()) @db.Char(36)
+  workspaceId          String                   @map("workspace_id") @db.Char(36)
+  githubInstallationId BigInt                   @unique(map: "github_installations_gh_id_key") @map("github_installation_id")
+  accountLogin         String                   @map("account_login") @db.VarChar(191)
+  accountType          String                   @map("account_type") @db.VarChar(32)
+  targetType           String                   @map("target_type") @db.VarChar(32)
+  status               GithubInstallationStatus @default(ACTIVE)
+  permissionsJson      Json?                    @map("permissions_json")
+  installedByUserId    String?                  @map("installed_by_user_id") @db.Char(36)
+  installedAt          DateTime                 @default(now()) @map("installed_at") @db.DateTime(3)
+  revokedAt            DateTime?                @map("revoked_at") @db.DateTime(3)
+  createdAt            DateTime                 @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime                 @updatedAt @map("updated_at") @db.DateTime(3)
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "github_installations_workspace_id_fkey")
+  installedBy  User?        @relation("GithubInstaller", fields: [installedByUserId], references: [id], onDelete: SetNull, map: "github_installations_installed_by_fkey")
+  repositories Repository[]
+
+  @@unique([workspaceId, id], map: "github_installations_workspace_id_id_key")
+  @@index([workspaceId, status], map: "github_installations_workspace_status_idx")
+  @@index([installedByUserId], map: "github_installations_installed_by_idx")
+  @@map("github_installations")
+}
+
+model Repository {
+  id                   String               @id @default(uuid()) @db.Char(36)
+  workspaceId          String               @map("workspace_id") @db.Char(36)
+  githubInstallationId String?              @map("github_installation_id") @db.Char(36)
+  githubRepoId         BigInt               @map("github_repo_id")
+  ownerLogin           String               @map("owner_login") @db.VarChar(191)
+  name                 String               @db.VarChar(191)
+  fullName             String               @map("full_name") @db.VarChar(384)
+  description          String?              @db.VarChar(500)
+  defaultBranch        String               @default("main") @map("default_branch") @db.VarChar(128)
+  visibility           RepositoryVisibility @default(PRIVATE)
+  primaryLanguage      String?              @map("primary_language") @db.VarChar(64)
+  isActive             Boolean              @default(true) @map("is_active")
+  accessRevokedAt      DateTime?            @map("access_revoked_at") @db.DateTime(3)
+  lastSyncedAt         DateTime?            @map("last_synced_at") @db.DateTime(3)
+  createdAt            DateTime             @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt            DateTime             @updatedAt @map("updated_at") @db.DateTime(3)
+
+  workspace          Workspace           @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "repositories_workspace_id_fkey")
+  githubInstallation GithubInstallation? @relation(fields: [workspaceId, githubInstallationId], references: [workspaceId, id], onDelete: Restrict, map: "repositories_ws_gh_installation_fkey")
+  branches           RepositoryBranch[]
+  commits            RepositoryCommit[]
+
+  @@unique([workspaceId, id], map: "repositories_workspace_id_id_key")
+  @@unique([workspaceId, githubRepoId], map: "repositories_workspace_gh_repo_key")
+  @@index([workspaceId, isActive, createdAt(sort: Desc), id], map: "repositories_ws_active_created_id_idx")
+  @@index([workspaceId, githubInstallationId], map: "repositories_ws_gh_installation_idx")
+  @@map("repositories")
+}
+
+model RepositoryBranch {
+  id           String    @id @default(uuid()) @db.Char(36)
+  workspaceId  String    @map("workspace_id") @db.Char(36)
+  repositoryId String    @map("repository_id") @db.Char(36)
+  name         String    @db.VarChar(255)
+  headSha      String    @map("head_sha") @db.Char(40)
+  isDefault    Boolean   @default(false) @map("is_default")
+  isProtected  Boolean   @default(false) @map("is_protected")
+  lastCommitAt DateTime? @map("last_commit_at") @db.DateTime(3)
+  createdAt    DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
+
+  repository Repository @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "repository_branches_ws_repo_fkey")
+
+  @@unique([workspaceId, repositoryId, name], map: "repository_branches_ws_repo_name_key")
+  @@index([workspaceId, repositoryId], map: "repository_branches_ws_repo_idx")
+  @@map("repository_branches")
+}
+
+model RepositoryCommit {
+  id              String   @id @default(uuid()) @db.Char(36)
+  workspaceId     String   @map("workspace_id") @db.Char(36)
+  repositoryId    String   @map("repository_id") @db.Char(36)
+  sha             String   @db.Char(40)
+  messageHeadline String   @map("message_headline") @db.VarChar(255)
+  authorName      String   @map("author_name") @db.VarChar(150)
+  authorEmail     String?  @map("author_email") @db.VarChar(255)
+  committedAt     DateTime @map("committed_at") @db.DateTime(3)
+  createdAt       DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  repository Repository @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "repository_commits_ws_repo_fkey")
+
+  @@unique([workspaceId, repositoryId, sha], map: "repository_commits_ws_repo_sha_key")
+  @@index([workspaceId, repositoryId, committedAt(sort: Desc)], map: "repository_commits_ws_repo_committed_idx")
+  @@map("repository_commits")
+}

@@ -1,0 +1,8 @@
+.next
+node_modules
+dist
+coverage
+src/generated
+prisma/migrations
+package-lock.json
+test-results
