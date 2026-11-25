@@ -1,0 +1,203 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CodePilot AI — Stack 01: Sandbox VPC, Public Application Subnet, Two Private RDS Subnets,
+  Internet Gateway, Route Tables, and Least-Privilege Security Groups (Zero Public SSH / Zero Public RDS).
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: sandbox
+    AllowedValues:
+      - sandbox
+      - staging
+      - production
+  VpcCidr:
+    Type: String
+    Default: 10.42.0.0/16
+  PublicSubnetCidr:
+    Type: String
+    Default: 10.42.1.0/24
+  PrivateDbSubnetACidr:
+    Type: String
+    Default: 10.42.10.0/24
+  PrivateDbSubnetBCidr:
+    Type: String
+    Default: 10.42.11.0/24
+
+Resources:
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidr
+      EnableDnsSupport: true
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-vpc
+        - Key: Project
+          Value: codepilot-ai
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-igw
+        - Key: Project
+          Value: codepilot-ai
+
+  VpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      VpcId: !Ref Vpc
+      InternetGatewayId: !Ref InternetGateway
+
+  PublicAppSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PublicSubnetCidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: true
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-public-app-a
+        - Key: Tier
+          Value: public
+
+  PrivateDbSubnetA:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateDbSubnetACidr
+      AvailabilityZone: !Select [0, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-private-db-a
+        - Key: Tier
+          Value: private-db
+
+  PrivateDbSubnetB:
+    Type: AWS::EC2::Subnet
+    Properties:
+      VpcId: !Ref Vpc
+      CidrBlock: !Ref PrivateDbSubnetBCidr
+      AvailabilityZone: !Select [1, !GetAZs '']
+      MapPublicIpOnLaunch: false
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-private-db-b
+        - Key: Tier
+          Value: private-db
+
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-public-rt
+
+  PublicDefaultRoute:
+    Type: AWS::EC2::Route
+    DependsOn: VpcGatewayAttachment
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PublicSubnetRouteAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PublicAppSubnet
+      RouteTableId: !Ref PublicRouteTable
+
+  PrivateDbRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-private-db-rt
+
+  PrivateDbSubnetAAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateDbSubnetA
+      RouteTableId: !Ref PrivateDbRouteTable
+
+  PrivateDbSubnetBAssociation:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      SubnetId: !Ref PrivateDbSubnetB
+      RouteTableId: !Ref PrivateDbRouteTable
+
+  # Application EC2 Security Group: HTTPS/HTTP only; ZERO SSH (uses AWS SSM Session Manager)
+  AppHostSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CodePilot AI EC2 application host (HTTP/HTTPS ingress only; SSM for admin)
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 80
+          ToPort: 80
+          CidrIp: 0.0.0.0/0
+          Description: HTTP redirect to HTTPS and ACME challenge
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+          Description: HTTPS traffic to Nginx reverse proxy
+      SecurityGroupEgress:
+        - IpProtocol: -1
+          CidrIp: 0.0.0.0/0
+          Description: Outbound HTTPS to GitHub, Docker Hub, AWS APIs, and private RDS
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-app-sg
+
+  # Private RDS Security Group: MySQL 3306 ONLY from AppHostSecurityGroup
+  RdsSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: CodePilot AI private RDS MySQL 8.4 (ingress restricted strictly to AppHostSecurityGroup)
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 3306
+          ToPort: 3306
+          SourceSecurityGroupId: !Ref AppHostSecurityGroup
+          Description: MySQL access strictly from CodePilot AI EC2 host
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-rds-sg
+
+Outputs:
+  VpcId:
+    Value: !Ref Vpc
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-vpc-id
+  PublicAppSubnetId:
+    Value: !Ref PublicAppSubnet
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-public-subnet-id
+  PrivateDbSubnetAId:
+    Value: !Ref PrivateDbSubnetA
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-private-db-subnet-a-id
+  PrivateDbSubnetBId:
+    Value: !Ref PrivateDbSubnetB
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-private-db-subnet-b-id
+  AppHostSecurityGroupId:
+    Value: !Ref AppHostSecurityGroup
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-app-sg-id
+  RdsSecurityGroupId:
+    Value: !Ref RdsSecurityGroup
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-rds-sg-id

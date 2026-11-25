@@ -1,0 +1,66 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CodePilot AI — Stack 04: Monthly AWS Sandbox Cost Budget ($40/month USD cap)
+  with 50%, 80%, and 100% Actual & Forecasted Cost Alerts.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: sandbox
+  MonthlyBudgetLimitUsd:
+    Type: Number
+    Default: 40
+    MinValue: 5
+    MaxValue: 100
+  AlertEmailAddress:
+    Type: String
+    Description: Email address to receive AWS Budgets 50%, 80%, and 100% spend alerts
+
+Resources:
+  MonthlySandboxBudget:
+    Type: AWS::Budgets::Budget
+    Properties:
+      Budget:
+        BudgetName: !Sub codepilot-ai-${EnvironmentName}-monthly-budget
+        BudgetType: COST
+        TimeUnit: MONTHLY
+        BudgetLimit:
+          Amount: !Ref MonthlyBudgetLimitUsd
+          Unit: USD
+      NotificationsWithSubscribers:
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 50
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmailAddress
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 80
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmailAddress
+        - Notification:
+            NotificationType: ACTUAL
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmailAddress
+        - Notification:
+            NotificationType: FORECASTED
+            ComparisonOperator: GREATER_THAN
+            Threshold: 100
+            ThresholdType: PERCENTAGE
+          Subscribers:
+            - SubscriptionType: EMAIL
+              Address: !Ref AlertEmailAddress
+
+Outputs:
+  BudgetName:
+    Value: !Sub codepilot-ai-${EnvironmentName}-monthly-budget

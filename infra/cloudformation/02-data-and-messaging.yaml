@@ -1,0 +1,239 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CodePilot AI — Stack 02: Private Single-AZ RDS MySQL 8.4 (db.t3.micro), Encrypted Private S3 Artifacts Bucket,
+  Amazon SQS Analysis Queue + Dead-Letter Queue, and CloudWatch Log Groups & Alarms.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: sandbox
+  DbName:
+    Type: String
+    Default: codepilot_ai
+  DbUsername:
+    Type: String
+    Default: codepilot_admin
+  DbMasterPassword:
+    Type: String
+    NoEcho: true
+    MinLength: 16
+    Description: Master password for RDS MySQL 8.4 (supplied securely at deploy time; never stored in Git)
+
+Resources:
+  DbSubnetGroup:
+    Type: AWS::RDS::DBSubnetGroup
+    Properties:
+      DBSubnetGroupDescription: Private database subnets across 2 AZs for CodePilot AI RDS MySQL 8.4
+      SubnetIds:
+        - Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-private-db-subnet-a-id
+        - Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-private-db-subnet-b-id
+      Tags:
+        - Key: Project
+          Value: codepilot-ai
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  RdsParameterGroup:
+    Type: AWS::RDS::DBParameterGroup
+    Properties:
+      Description: MySQL 8.4 LTS hardened parameter group enforcing TLS transport
+      Family: mysql8.4
+      Parameters:
+        require_secure_transport: 'ON'
+        character_set_server: utf8mb4
+        collation_server: utf8mb4_unicode_ci
+
+  RdsMysqlInstance:
+    Type: AWS::RDS::DBInstance
+    DeletionPolicy: Snapshot
+    UpdateReplacePolicy: Snapshot
+    Properties:
+      DBInstanceIdentifier: !Sub codepilot-ai-${EnvironmentName}-mysql
+      Engine: mysql
+      EngineVersion: '8.4'
+      DBInstanceClass: db.t3.micro
+      AllocatedStorage: '20'
+      MaxAllocatedStorage: 40
+      StorageType: gp3
+      StorageEncrypted: true
+      MultiAZ: false
+      PubliclyAccessible: false
+      DBName: !Ref DbName
+      MasterUsername: !Ref DbUsername
+      MasterUserPassword: !Ref DbMasterPassword
+      DBSubnetGroupName: !Ref DbSubnetGroup
+      DBParameterGroupName: !Ref RdsParameterGroup
+      VPCSecurityGroups:
+        - Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-rds-sg-id
+      BackupRetentionPeriod: 7
+      AutoMinorVersionUpgrade: true
+      DeletionProtection: false
+      CopyTagsToSnapshot: true
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-mysql
+        - Key: Project
+          Value: codepilot-ai
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  ArtifactsBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      BucketName: !Sub codepilot-ai-${EnvironmentName}-artifacts-${AWS::AccountId}-${AWS::Region}
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        BlockPublicPolicy: true
+        IgnorePublicAcls: true
+        RestrictPublicBuckets: true
+      BucketEncryption:
+        ServerSideEncryptionConfiguration:
+          - ServerSideEncryptionByDefault:
+              SSEAlgorithm: AES256
+      VersioningConfiguration:
+        Status: Enabled
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireOldAnalysisArtifacts90d
+            Status: Enabled
+            ExpirationInDays: 90
+            NoncurrentVersionExpiration:
+              NoncurrentDays: 30
+      Tags:
+        - Key: Project
+          Value: codepilot-ai
+        - Key: Environment
+          Value: !Ref EnvironmentName
+
+  ArtifactsBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref ArtifactsBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: EnforceTlsOnly
+            Effect: Deny
+            Principal: '*'
+            Action: 's3:*'
+            Resource:
+              - !GetAtt ArtifactsBucket.Arn
+              - !Sub '${ArtifactsBucket.Arn}/*'
+            Condition:
+              Bool:
+                aws:SecureTransport: 'false'
+
+  AnalysisDeadLetterQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub codepilot-ai-${EnvironmentName}-analysis-dlq
+      MessageRetentionPeriod: 1209600
+      SqsManagedSseEnabled: true
+      Tags:
+        - Key: Project
+          Value: codepilot-ai
+
+  AnalysisQueue:
+    Type: AWS::SQS::Queue
+    Properties:
+      QueueName: !Sub codepilot-ai-${EnvironmentName}-analysis-queue
+      VisibilityTimeout: 180
+      MessageRetentionPeriod: 345600
+      ReceiveMessageWaitTimeSeconds: 20
+      SqsManagedSseEnabled: true
+      RedrivePolicy:
+        deadLetterTargetArn: !GetAtt AnalysisDeadLetterQueue.Arn
+        maxReceiveCount: 3
+      Tags:
+        - Key: Project
+          Value: codepilot-ai
+
+  BackendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /codepilot-ai/${EnvironmentName}/backend
+      RetentionInDays: 14
+
+  WorkerLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /codepilot-ai/${EnvironmentName}/worker
+      RetentionInDays: 14
+
+  FrontendLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /codepilot-ai/${EnvironmentName}/frontend
+      RetentionInDays: 14
+
+  NginxLogGroup:
+    Type: AWS::Logs::LogGroup
+    Properties:
+      LogGroupName: !Sub /codepilot-ai/${EnvironmentName}/nginx
+      RetentionInDays: 14
+
+  RdsHighCpuAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub codepilot-ai-${EnvironmentName}-rds-cpu-high
+      AlarmDescription: RDS MySQL CPU utilization exceeded 80% for 10 minutes
+      Namespace: AWS/RDS
+      MetricName: CPUUtilization
+      Dimensions:
+        - Name: DBInstanceIdentifier
+          Value: !Ref RdsMysqlInstance
+      Statistic: Average
+      Period: 300
+      EvaluationPeriods: 2
+      Threshold: 80
+      ComparisonOperator: GreaterThanThreshold
+
+  SqsDlqVisibleAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub codepilot-ai-${EnvironmentName}-sqs-dlq-nonempty
+      AlarmDescription: One or more CodePilot AI background jobs moved to Dead-Letter Queue
+      Namespace: AWS/SQS
+      MetricName: ApproximateNumberOfMessagesVisible
+      Dimensions:
+        - Name: QueueName
+          Value: !GetAtt AnalysisDeadLetterQueue.QueueName
+      Statistic: Maximum
+      Period: 300
+      EvaluationPeriods: 1
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+
+Outputs:
+  RdsEndpointAddress:
+    Value: !GetAtt RdsMysqlInstance.Endpoint.Address
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-rds-endpoint
+  RdsPort:
+    Value: !GetAtt RdsMysqlInstance.Endpoint.Port
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-rds-port
+  ArtifactsBucketName:
+    Value: !Ref ArtifactsBucket
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-artifacts-bucket
+  ArtifactsBucketArn:
+    Value: !GetAtt ArtifactsBucket.Arn
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-artifacts-bucket-arn
+  AnalysisQueueUrl:
+    Value: !Ref AnalysisQueue
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-sqs-queue-url
+  AnalysisQueueArn:
+    Value: !GetAtt AnalysisQueue.Arn
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-sqs-queue-arn
+  AnalysisDlqUrl:
+    Value: !Ref AnalysisDeadLetterQueue
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-sqs-dlq-url
+  AnalysisDlqArn:
+    Value: !GetAtt AnalysisDeadLetterQueue.Arn
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-sqs-dlq-arn

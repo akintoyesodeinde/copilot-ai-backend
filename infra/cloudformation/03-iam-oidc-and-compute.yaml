@@ -1,0 +1,281 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  CodePilot AI — Stack 03: GitHub Actions IAM OIDC Deploy Role (No Static AWS Keys),
+  EC2 Instance Profile Role, EC2 Launch Template (t3.small, IMDSv2, Encrypted gp3), EC2 Host & Elastic IP.
+
+Parameters:
+  EnvironmentName:
+    Type: String
+    Default: sandbox
+  GithubOrg:
+    Type: String
+    Default: akintoyesodeinde
+  BackendRepoName:
+    Type: String
+    Default: copilot-ai-backend
+  FrontendRepoName:
+    Type: String
+    Default: codepilot-ai-frontend
+  ExistingGithubOidcProviderArn:
+    Type: String
+    Default: ''
+    Description: Optional existing GitHub OIDC provider ARN; if empty, creates token.actions.githubusercontent.com provider
+  LatestAl2023AmiId:
+    Type: AWS::SSM::Parameter::Value<AWS::EC2::Image::Id>
+    Default: /aws/service/ami-amazon-linux-latest/al2023-ami-kernel-default-x86_64
+  DockerHubNamespace:
+    Type: String
+    Default: akintoyesodeinde
+  AppDomain:
+    Type: String
+    Default: localhost
+
+Conditions:
+  CreateOidcProvider: !Equals [!Ref ExistingGithubOidcProviderArn, '']
+
+Resources:
+  GithubOidcProvider:
+    Type: AWS::IAM::OIDCProvider
+    Condition: CreateOidcProvider
+    Properties:
+      Url: https://token.actions.githubusercontent.com
+      ClientIdList:
+        - sts.amazonaws.com
+      ThumbprintList:
+        - 6938fd4d98bab03faadb97b34396831e3780aea1
+        - 1c58a3a8518e8759bf075b76b750d4f2df264fcd
+
+  GithubActionsDeployRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub codepilot-ai-${EnvironmentName}-github-oidc-deploy-role
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !If
+                - CreateOidcProvider
+                - !Ref GithubOidcProvider
+                - !Ref ExistingGithubOidcProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                token.actions.githubusercontent.com:aud: sts.amazonaws.com
+              StringLike:
+                token.actions.githubusercontent.com:sub:
+                  - !Sub repo:${GithubOrg}/${BackendRepoName}:ref:refs/heads/main
+                  - !Sub repo:${GithubOrg}/${BackendRepoName}:ref:refs/tags/v*
+                  - !Sub repo:${GithubOrg}/${FrontendRepoName}:ref:refs/heads/main
+                  - !Sub repo:${GithubOrg}/${FrontendRepoName}:ref:refs/tags/v*
+      Policies:
+        - PolicyName: ScopedSsmDeployPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: AllowSsmCommandOnCodePilotHostOnly
+                Effect: Allow
+                Action:
+                  - ssm:SendCommand
+                Resource:
+                  - !Sub arn:aws:ssm:${AWS::Region}::document/AWS-RunShellScript
+                  - !Sub arn:aws:ec2:${AWS::Region}:${AWS::AccountId}:instance/*
+                Condition:
+                  StringEquals:
+                    ssm:resourceTag/Project: codepilot-ai
+              - Sid: AllowSsmCommandStatusRead
+                Effect: Allow
+                Action:
+                  - ssm:GetCommandInvocation
+                  - ssm:ListCommandInvocations
+                  - ec2:DescribeInstances
+                Resource: '*'
+
+  Ec2HostRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: !Sub codepilot-ai-${EnvironmentName}-ec2-host-role
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: ec2.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: CodePilotRuntimeScopedAccess
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: ReadScopedSsmParameters
+                Effect: Allow
+                Action:
+                  - ssm:GetParameter
+                  - ssm:GetParameters
+                  - ssm:GetParametersByPath
+                Resource: !Sub arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:parameter/codepilot-ai/${EnvironmentName}/*
+              - Sid: ScopedArtifactsS3Access
+                Effect: Allow
+                Action:
+                  - s3:GetObject
+                  - s3:PutObject
+                  - s3:DeleteObject
+                  - s3:ListBucket
+                Resource:
+                  - Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-artifacts-bucket-arn
+                  - !Sub
+                    - '${BucketArn}/*'
+                    - BucketArn:
+                        Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-artifacts-bucket-arn
+              - Sid: ScopedSqsQueueAccess
+                Effect: Allow
+                Action:
+                  - sqs:SendMessage
+                  - sqs:ReceiveMessage
+                  - sqs:DeleteMessage
+                  - sqs:ChangeMessageVisibility
+                  - sqs:GetQueueAttributes
+                Resource:
+                  - Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-sqs-queue-arn
+                  - Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-sqs-dlq-arn
+              - Sid: CloudWatchLogsWrite
+                Effect: Allow
+                Action:
+                  - logs:CreateLogStream
+                  - logs:PutLogEvents
+                  - logs:DescribeLogStreams
+                Resource: !Sub arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/codepilot-ai/${EnvironmentName}/*:*
+
+  Ec2InstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      InstanceProfileName: !Sub codepilot-ai-${EnvironmentName}-ec2-profile
+      Roles:
+        - !Ref Ec2HostRole
+
+  AppHostLaunchTemplate:
+    Type: AWS::EC2::LaunchTemplate
+    Properties:
+      LaunchTemplateName: !Sub codepilot-ai-${EnvironmentName}-lt
+      VersionDescription: CodePilot AI Sandbox Host (t3.small, AL2023, IMDSv2, Encrypted gp3)
+      LaunchTemplateData:
+        ImageId: !Ref LatestAl2023AmiId
+        InstanceType: t3.small
+        IamInstanceProfile:
+          Arn: !GetAtt Ec2InstanceProfile.Arn
+        SecurityGroupIds:
+          - Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-app-sg-id
+        MetadataOptions:
+          HttpTokens: required
+          HttpEndpoint: enabled
+          HttpPutResponseHopLimit: 2
+        BlockDeviceMappings:
+          - DeviceName: /dev/xvda
+            Ebs:
+              VolumeSize: 30
+              VolumeType: gp3
+              Encrypted: true
+              DeleteOnTermination: true
+        UserData:
+          Fn::Base64: !Sub
+            - |
+              #!/usr/bin/env bash
+              set -euo pipefail
+              exec > >(tee /var/log/codepilot-bootstrap.log) 2>&1
+
+              dnf update -y
+              dnf install -y docker awscli jq nginx openssl
+              systemctl enable --now docker
+
+              mkdir -p /usr/local/lib/docker/cli-plugins
+              if [ ! -x /usr/local/lib/docker/cli-plugins/docker-compose ]; then
+                curl -fsSL https://github.com/docker/compose/releases/latest/download/docker-compose-linux-x86_64 \
+                  -o /usr/local/lib/docker/cli-plugins/docker-compose
+                chmod +x /usr/local/lib/docker/cli-plugins/docker-compose
+              fi
+
+              mkdir -p /opt/codepilot-ai/certs
+              cat <<'METAEOF' > /opt/codepilot-ai/deployment.meta
+              ENVIRONMENT_NAME=${EnvironmentName}
+              AWS_REGION=${AWS::Region}
+              DOCKERHUB_NAMESPACE=${DockerHubNamespace}
+              APP_DOMAIN=${AppDomain}
+              RDS_ENDPOINT=${RdsEndpoint}
+              SQS_QUEUE_URL=${SqsQueueUrl}
+              SQS_DLQ_URL=${SqsDlqUrl}
+              S3_ARTIFACTS_BUCKET=${S3Bucket}
+              METAEOF
+              chmod 600 /opt/codepilot-ai/deployment.meta
+              echo "CodePilot AI EC2 bootstrap completed cleanly."
+            - RdsEndpoint:
+                Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-rds-endpoint
+              SqsQueueUrl:
+                Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-sqs-queue-url
+              SqsDlqUrl:
+                Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-sqs-dlq-url
+              S3Bucket:
+                Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-artifacts-bucket
+        TagSpecifications:
+          - ResourceType: instance
+            Tags:
+              - Key: Name
+                Value: !Sub codepilot-ai-${EnvironmentName}-app-host
+              - Key: Project
+                Value: codepilot-ai
+              - Key: Environment
+                Value: !Ref EnvironmentName
+
+  AppHostInstance:
+    Type: AWS::EC2::Instance
+    Properties:
+      SubnetId:
+        Fn::ImportValue: !Sub codepilot-ai-${EnvironmentName}-public-subnet-id
+      LaunchTemplate:
+        LaunchTemplateId: !Ref AppHostLaunchTemplate
+        Version: !GetAtt AppHostLaunchTemplate.LatestVersionNumber
+
+  AppHostEip:
+    Type: AWS::EC2::EIP
+    Properties:
+      Domain: vpc
+      InstanceId: !Ref AppHostInstance
+      Tags:
+        - Key: Name
+          Value: !Sub codepilot-ai-${EnvironmentName}-eip
+        - Key: Project
+          Value: codepilot-ai
+
+  Ec2StatusCheckAlarm:
+    Type: AWS::CloudWatch::Alarm
+    Properties:
+      AlarmName: !Sub codepilot-ai-${EnvironmentName}-ec2-status-failed
+      AlarmDescription: CodePilot AI EC2 application host failed instance or system status check
+      Namespace: AWS/EC2
+      MetricName: StatusCheckFailed
+      Dimensions:
+        - Name: InstanceId
+          Value: !Ref AppHostInstance
+      Statistic: Maximum
+      Period: 60
+      EvaluationPeriods: 2
+      Threshold: 0
+      ComparisonOperator: GreaterThanThreshold
+
+Outputs:
+  GithubActionsDeployRoleArn:
+    Value: !GetAtt GithubActionsDeployRole.Arn
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-github-deploy-role-arn
+  AppHostInstanceId:
+    Value: !Ref AppHostInstance
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-ec2-instance-id
+  AppHostPublicIp:
+    Value: !Ref AppHostEip
+    Export:
+      Name: !Sub codepilot-ai-${EnvironmentName}-public-ip
+  LaunchTemplateId:
+    Value: !Ref AppHostLaunchTemplate
