@@ -35,6 +35,34 @@ const envSchema = z.object({
     .transform((v) => v === 'true'),
   OTEL_SERVICE_NAME: z.string().min(1).default('codepilot-ai-backend'),
   OTEL_EXPORTER_OTLP_ENDPOINT: z.string().optional().default(''),
+
+  // Phase 2: GitHub App Integration
+  GITHUB_MODE: z.enum(['live', 'fixture']).default('fixture'),
+  GITHUB_APP_ID: z.string().optional().default(''),
+  GITHUB_APP_SLUG: z.string().optional().default('codepilot-ai-sandbox'),
+  GITHUB_APP_PRIVATE_KEY: z.string().optional().default(''),
+  GITHUB_WEBHOOK_SECRET: z.string().default('dev-only-github-webhook-secret-change-me'),
+
+  // Phase 2: AWS SQS, S3, and Worker Controls
+  AWS_REGION: z.string().default('us-east-1'),
+  SQS_ENDPOINT_URL: z.string().optional().default(''),
+  SQS_QUEUE_URL: z.string().optional().default(''),
+  SQS_DLQ_URL: z.string().optional().default(''),
+  S3_ENDPOINT_URL: z.string().optional().default(''),
+  S3_ARTIFACTS_BUCKET: z.string().optional().default(''),
+  WORKER_CONCURRENCY: z.coerce.number().int().min(1).max(32).default(4),
+  WORKER_POLL_INTERVAL_MS: z.coerce.number().int().min(200).max(60_000).default(2000),
+  WORKER_VISIBILITY_TIMEOUT_SEC: z.coerce.number().int().min(30).max(900).default(120),
+
+  // Phase 2: Provider-Agnostic AI Infrastructure
+  AI_DEFAULT_PROVIDER: z.enum(['mock', 'openai', 'anthropic', 'bedrock']).default('mock'),
+  OPENAI_API_KEY: z.string().optional().default(''),
+  OPENAI_MODEL: z.string().default('gpt-4.1-mini'),
+  ANTHROPIC_API_KEY: z.string().optional().default(''),
+  ANTHROPIC_MODEL: z.string().default('claude-sonnet-4-20250514'),
+  BEDROCK_MODEL_ID: z.string().default('anthropic.claude-3-5-sonnet-20241022-v2:0'),
+  AI_REQUEST_TIMEOUT_MS: z.coerce.number().int().min(1000).max(120_000).default(30_000),
+  AI_MAX_REQUEST_COST_USD: z.coerce.number().min(0.01).max(50).default(1.0),
 });
 
 export type AppEnv = Omit<z.infer<typeof envSchema>, 'COOKIE_SECURE'> & {

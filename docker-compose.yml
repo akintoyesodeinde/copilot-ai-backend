@@ -19,6 +19,14 @@ services:
       retries: 20
       start_period: 60s
 
+  elasticmq:
+    image: softwaremill/elasticmq-native:latest
+    container_name: codepilot-sqs-local
+    restart: unless-stopped
+    ports:
+      - '127.0.0.1:9324:9324'
+      - '127.0.0.1:9325:9325'
+
   backend:
     build:
       context: .
@@ -36,6 +44,8 @@ services:
       DATABASE_URL: mysql://${MYSQL_USER:-codepilot}:${MYSQL_PASSWORD:-codepilot_dev_password}@mysql:3306/${MYSQL_DATABASE:-codepilot_ai}
       SESSION_SECRET: ${SESSION_SECRET:-local-docker-compose-session-secret-change-for-production-2026}
       COOKIE_SECURE: 'false'
+      GITHUB_MODE: ${GITHUB_MODE:-fixture}
+      AI_DEFAULT_PROVIDER: ${AI_DEFAULT_PROVIDER:-mock}
       LOG_LEVEL: info
     ports:
       - '127.0.0.1:4000:4000'
@@ -45,6 +55,24 @@ services:
       timeout: 5s
       retries: 5
       start_period: 20s
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    container_name: codepilot-worker
+    restart: unless-stopped
+    depends_on:
+      mysql:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      DATABASE_URL: mysql://${MYSQL_USER:-codepilot}:${MYSQL_PASSWORD:-codepilot_dev_password}@mysql:3306/${MYSQL_DATABASE:-codepilot_ai}
+      SESSION_SECRET: ${SESSION_SECRET:-local-docker-compose-session-secret-change-for-production-2026}
+      GITHUB_MODE: ${GITHUB_MODE:-fixture}
+      AI_DEFAULT_PROVIDER: ${AI_DEFAULT_PROVIDER:-mock}
+      WORKER_CONCURRENCY: '4'
+      LOG_LEVEL: info
 
 volumes:
   codepilot_mysql_data:

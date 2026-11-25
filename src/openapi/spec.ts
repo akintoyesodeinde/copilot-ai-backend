@@ -554,6 +554,307 @@ export function getOpenApiSpec(): OpenApi31Document {
           },
         },
       },
+      '/api/v1/github/installations': {
+        get: {
+          tags: ['GitHub'],
+          summary: 'List GitHub App installations connected to the active workspace',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam],
+          responses: {
+            '200': { description: 'Connected installations' },
+            '401': problemResponseRef('Unauthorized'),
+            '403': problemResponseRef('Forbidden'),
+          },
+        },
+      },
+      '/api/v1/github/install': {
+        get: {
+          tags: ['GitHub'],
+          summary: 'Generate a signed least-privilege GitHub App installation URL',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam],
+          responses: {
+            '200': { description: 'Signed installation redirect URL' },
+            '403': problemResponseRef('Forbidden'),
+          },
+        },
+      },
+      '/api/v1/github/callback': {
+        get: {
+          tags: ['GitHub'],
+          summary: 'Verify signed installation state and bind GitHub App installation to workspace',
+          responses: {
+            '201': { description: 'Installation bound and repositories synced' },
+            '400': problemResponseRef('Invalid parameters'),
+            '409': problemResponseRef('Installation already bound to another workspace'),
+          },
+        },
+      },
+      '/api/v1/github/installations/{id}': {
+        delete: {
+          tags: ['GitHub'],
+          summary: 'Revoke a GitHub App installation and immediately disable repository access',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '200': { description: 'Installation revoked' },
+            '403': problemResponseRef('Forbidden'),
+            '404': problemResponseRef('Not found'),
+          },
+        },
+      },
+      '/api/v1/webhooks/github': {
+        post: {
+          tags: ['GitHub'],
+          summary:
+            'Ingest HMAC-SHA256 signed GitHub webhooks with delivery deduplication and transactional outbox',
+          responses: {
+            '202': { description: 'Webhook accepted' },
+            '401': problemResponseRef('Invalid signature'),
+            '403': problemResponseRef('Unauthorized installation'),
+          },
+        },
+      },
+      '/api/v1/repositories/{id}/sync': {
+        post: {
+          tags: ['Repositories'],
+          summary:
+            'Schedule asynchronous repository branch, commit, and PR sync (HTTP 202 Accepted)',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '202': { description: 'Durable sync job scheduled' },
+            '403': problemResponseRef('Forbidden'),
+            '404': problemResponseRef('Not found'),
+          },
+        },
+      },
+      '/api/v1/repositories/{id}/index': {
+        post: {
+          tags: ['Code Intelligence'],
+          summary: 'Schedule commit-SHA Tree-sitter AST indexing job (HTTP 202 Accepted)',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '202': { description: 'Durable indexing job scheduled' },
+            '403': problemResponseRef('Forbidden'),
+          },
+        },
+      },
+      '/api/v1/repositories/{id}/branches': {
+        get: {
+          tags: ['Repositories'],
+          summary: 'List tracked branches for a repository',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Repository branches' } },
+        },
+      },
+      '/api/v1/repositories/{id}/files': {
+        get: {
+          tags: ['Code Intelligence'],
+          summary: 'List commit-scoped indexed source files for a repository',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Indexed source files' } },
+        },
+      },
+      '/api/v1/repositories/{id}/symbols': {
+        get: {
+          tags: ['Code Intelligence'],
+          summary: 'List Tree-sitter AST extracted symbols for a repository',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Extracted AST symbols' } },
+        },
+      },
+      '/api/v1/pull-requests': {
+        get: {
+          tags: ['Pull Requests'],
+          summary: 'List tenant-scoped pull requests with latest AI review summary',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam, ...paginationParams],
+          responses: { '200': { description: 'Cursor-paginated pull requests' } },
+        },
+      },
+      '/api/v1/pull-requests/{id}': {
+        get: {
+          tags: ['Pull Requests'],
+          summary: 'Retrieve pull request details and review history',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '200': { description: 'Pull request details' },
+            '404': problemResponseRef('Not found'),
+          },
+        },
+      },
+      '/api/v1/pull-requests/{id}/diff': {
+        get: {
+          tags: ['Pull Requests'],
+          summary: 'Retrieve changed files and unified diffs for a pull request head commit',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Pull request diff files' } },
+        },
+      },
+      '/api/v1/pull-requests/{id}/reviews': {
+        post: {
+          tags: ['Reviews'],
+          summary: 'Schedule an idempotent automated PR review job (HTTP 202 Accepted)',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '202': { description: 'Review job accepted' },
+            '403': problemResponseRef('Forbidden'),
+          },
+        },
+      },
+      '/api/v1/reviews/{id}': {
+        get: {
+          tags: ['Reviews'],
+          summary: 'Get automated code review status, summary, and lifecycle timestamps',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '200': { description: 'Review detail' },
+            '404': problemResponseRef('Not found'),
+          },
+        },
+      },
+      '/api/v1/reviews/{id}/findings': {
+        get: {
+          tags: ['Reviews'],
+          summary: 'List validated deterministic and AI review findings with severity filters',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Review findings' } },
+        },
+      },
+      '/api/v1/reviews/{id}/approve': {
+        post: {
+          tags: ['Reviews'],
+          summary: 'Approve a completed review awaiting human approval prior to GitHub publishing',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '200': { description: 'Review approved' },
+            '409': problemResponseRef('Invalid state transition'),
+          },
+        },
+      },
+      '/api/v1/reviews/{id}/reject': {
+        post: {
+          tags: ['Reviews'],
+          summary: 'Reject a generated review to prevent publishing',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Review rejected' } },
+        },
+      },
+      '/api/v1/reviews/{id}/publish': {
+        post: {
+          tags: ['Reviews'],
+          summary:
+            'Publish an approved review to GitHub with stale head-SHA and duplicate comment guards',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '200': { description: 'Review published to GitHub' },
+            '403': problemResponseRef('Human approval required'),
+            '409': problemResponseRef('Stale PR head SHA'),
+          },
+        },
+      },
+      '/api/v1/findings/{id}/feedback': {
+        post: {
+          tags: ['Reviews'],
+          summary:
+            'Record developer quality feedback (HELPFUL, NOT_HELPFUL, FALSE_POSITIVE) on a finding',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Feedback recorded' } },
+        },
+      },
+      '/api/v1/jobs': {
+        get: {
+          tags: ['Jobs'],
+          summary: 'List workspace background analysis jobs',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam, ...paginationParams],
+          responses: { '200': { description: 'Cursor-paginated jobs list' } },
+        },
+      },
+      '/api/v1/jobs/{id}': {
+        get: {
+          tags: ['Jobs'],
+          summary: 'Inspect durable analysis job status, attempts, heartbeats, and result',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '200': { description: 'Job detail' },
+            '404': problemResponseRef('Not found'),
+          },
+        },
+      },
+      '/api/v1/ai/usage': {
+        get: {
+          tags: ['AI'],
+          summary:
+            'Retrieve workspace AI token usage, provider breakdown, and spending budget status',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam],
+          responses: { '200': { description: 'AI usage summary' } },
+        },
+      },
     },
   };
 }

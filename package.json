@@ -10,6 +10,7 @@
     "dev": "next dev --port 4000",
     "build": "prisma generate && next build",
     "start": "next start --port 4000",
+    "worker": "tsx src/worker/index.ts",
     "lint": "eslint .",
     "format": "prettier --write .",
     "format:check": "prettier --check .",
@@ -21,19 +22,27 @@
     "test": "vitest run",
     "test:unit": "vitest run tests/unit --outputFile.junit=test-results/unit-junit.xml",
     "test:integration": "vitest run tests/integration --outputFile.junit=test-results/integration-junit.xml",
-    "test:authz": "vitest run tests/authorization --outputFile.junit=test-results/authz-junit.xml"
+    "test:authz": "vitest run tests/authorization --outputFile.junit=test-results/authz-junit.xml",
+    "test:phase2": "vitest run tests/phase2 --outputFile.junit=test-results/phase2-junit.xml"
   },
   "dependencies": {
+    "@aws-sdk/client-bedrock-runtime": "^3.1177.0",
+    "@aws-sdk/client-s3": "^3.1177.0",
+    "@aws-sdk/client-sqs": "^3.1177.0",
+    "@octokit/auth-app": "^8.3.1",
+    "@octokit/rest": "^22.0.1",
     "@opentelemetry/api": "^1.10.0",
     "@opentelemetry/sdk-node": "^0.301.2",
     "@prisma/adapter-mariadb": "7.10.1",
     "@prisma/client": "7.10.1",
+    "@vscode/tree-sitter-wasm": "^0.3.1",
     "argon2": "^0.45.2",
     "mariadb": "^3.5.4",
     "next": "16.4.6",
     "pino": "^10.4.0",
     "react": "19.3.1",
     "react-dom": "19.3.1",
+    "web-tree-sitter": "^0.27.2",
     "zod": "^4.6.7"
   },
   "devDependencies": {

@@ -43,6 +43,8 @@ jobs:
       SESSION_SECRET: ci-test-only-session-secret-must-be-32-chars-minimum
       COOKIE_SECURE: 'false'
       RATE_LIMIT_LOGIN_MAX: '50'
+      GITHUB_MODE: fixture
+      AI_DEFAULT_PROVIDER: mock
 
     steps:
       - name: Checkout repository
@@ -92,6 +94,9 @@ jobs:
       - name: Run authorization and tenant isolation tests
         run: npm run test:authz
 
+      - name: Run Phase 2 GitHub, worker, indexing, AI & review tests
+        run: npm run test:phase2
+
       - name: Dependency vulnerability scan
         run: npm audit --omit=dev --audit-level=high
 
@@ -120,7 +125,7 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
 
-      - name: Build Docker image
+      - name: Build Backend Docker image
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
           context: .
@@ -128,5 +133,16 @@ jobs:
           push: false
           load: false
           tags: codepilot-ai-backend:ci-${{ github.sha }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      - name: Build Worker Docker image
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: ./Dockerfile.worker
+          push: false
+          load: false
+          tags: codepilot-ai-worker:ci-${{ github.sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

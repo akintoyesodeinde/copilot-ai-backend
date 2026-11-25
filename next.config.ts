@@ -10,6 +10,8 @@ const nextConfig: NextConfig = {
     'mariadb',
     '@prisma/adapter-mariadb',
     '@opentelemetry/sdk-node',
+    'web-tree-sitter',
+    '@vscode/tree-sitter-wasm',
   ],
   headers: async () => [
     {

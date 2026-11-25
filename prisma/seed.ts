@@ -7,6 +7,7 @@ import {
   ROLE_DEFINITIONS,
   ROLE_KEYS,
 } from '../src/modules/authorization/domain/rbac';
+import { PR_REVIEW_PROMPT_V1 } from '../src/modules/ai/domain/prompt-registry';
 
 if (fs.existsSync('.env')) {
   process.loadEnvFile('.env');
@@ -332,7 +333,107 @@ async function seed() {
       }
     }
 
-    // 5. Seed initial notification & audit event if none exist yet
+    // 5. Seed versioned AI prompt registry & synthetic open pull request for Phase 2 workflows
+    await prisma.promptVersion.upsert({
+      where: {
+        promptKey_version: {
+          promptKey: PR_REVIEW_PROMPT_V1.promptKey,
+          version: PR_REVIEW_PROMPT_V1.version,
+        },
+      },
+      update: {
+        systemPrompt: PR_REVIEW_PROMPT_V1.systemPrompt,
+        userTemplate: PR_REVIEW_PROMPT_V1.userTemplate,
+        outputSchemaName: PR_REVIEW_PROMPT_V1.outputSchemaName,
+        isActive: true,
+      },
+      create: {
+        promptKey: PR_REVIEW_PROMPT_V1.promptKey,
+        version: PR_REVIEW_PROMPT_V1.version,
+        purpose: PR_REVIEW_PROMPT_V1.purpose,
+        systemPrompt: PR_REVIEW_PROMPT_V1.systemPrompt,
+        userTemplate: PR_REVIEW_PROMPT_V1.userTemplate,
+        outputSchemaName: PR_REVIEW_PROMPT_V1.outputSchemaName,
+        isActive: true,
+      },
+    });
+
+    const ledgerRepo = await prisma.repository.findUnique({
+      where: {
+        workspaceId_githubRepoId: {
+          workspaceId: acmeWorkspace.id,
+          githubRepoId: BigInt(910001),
+        },
+      },
+    });
+
+    if (ledgerRepo) {
+      const seededPr = await prisma.pullRequest.upsert({
+        where: {
+          workspaceId_repositoryId_prNumber: {
+            workspaceId: acmeWorkspace.id,
+            repositoryId: ledgerRepo.id,
+            prNumber: 42,
+          },
+        },
+        update: {},
+        create: {
+          workspaceId: acmeWorkspace.id,
+          repositoryId: ledgerRepo.id,
+          githubPrId: BigInt(550042),
+          prNumber: 42,
+          title: 'feat: add ledger query helper and dynamic rule evaluator',
+          description:
+            'Synthetic pull request demonstrating unified diff inspection, automated AI review findings, human approval gates, and GitHub publishing.',
+          state: 'OPEN',
+          authorLogin: 'dmensah',
+          baseBranch: 'main',
+          headBranch: 'feat/ledger-dynamic-rules',
+          baseSha: 'a1b2c3d4e5f60718293a4b5c6d7e8f9012345601',
+          headSha: 'f9e8d7c6b5a40312293a4b5c6d7e8f9012345699',
+          isDraft: false,
+          additions: 10,
+          deletions: 0,
+          changedFilesCount: 1,
+          htmlUrl: 'https://github.com/acme-synthetic-org/payments-ledger-service/pull/42',
+        },
+      });
+
+      await prisma.pullRequestFile.upsert({
+        where: {
+          workspaceId_pullRequestId_headSha_filePath: {
+            workspaceId: acmeWorkspace.id,
+            pullRequestId: seededPr.id,
+            headSha: seededPr.headSha,
+            filePath: 'src/ledger/query-helper.ts',
+          },
+        },
+        update: {},
+        create: {
+          workspaceId: acmeWorkspace.id,
+          pullRequestId: seededPr.id,
+          headSha: seededPr.headSha,
+          filePath: 'src/ledger/query-helper.ts',
+          status: 'ADDED',
+          additions: 10,
+          deletions: 0,
+          patch: [
+            '@@ -0,0 +1,10 @@',
+            '+export function findLedgerByAccount(db: { query: (sql: string) => unknown }, accountId: string) {',
+            '+  const sql = `SELECT * FROM ledger_entries WHERE account_id = "${accountId}"`;',
+            '+  return db.query(sql);',
+            '+}',
+            '+',
+            '+export function evaluateFeeRule(ruleExpr: string): number {',
+            '+  // Dynamic evaluation for synthetic review demonstration',
+            '+  return Number(eval(ruleExpr));',
+            '+}',
+          ].join('\n'),
+        },
+      });
+    }
+
+    // 6. Seed initial notification & audit event if none exist yet
     const existingNotifCount = await prisma.notification.count({
       where: { workspaceId: acmeWorkspace.id },
     });
@@ -383,7 +484,7 @@ async function seed() {
       });
     }
 
-    console.log('Seed completed cleanly for CodePilot AI Phase 1.');
+    console.log('Seed completed cleanly for CodePilot AI Phases 1 & 2.');
   } finally {
     await prisma.$disconnect();
   }

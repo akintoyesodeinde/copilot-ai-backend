@@ -49,6 +49,108 @@ enum RepositoryVisibility {
   INTERNAL
 }
 
+enum WebhookProcessingStatus {
+  RECEIVED
+  QUEUED
+  PROCESSED
+  IGNORED
+  FAILED
+}
+
+enum PullRequestState {
+  OPEN
+  CLOSED
+  MERGED
+}
+
+enum RepositoryIndexStatus {
+  QUEUED
+  INDEXING
+  COMPLETED
+  FAILED
+}
+
+enum AnalysisJobType {
+  REPO_SYNC
+  REPO_INDEX
+  PR_REVIEW
+  PR_PUBLISH
+  SECURITY_SCAN
+  ARCHITECTURE_SCAN
+  TEST_GENERATION
+}
+
+enum AnalysisJobStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+  CANCELLED
+  DEAD_LETTERED
+}
+
+enum JobAttemptStatus {
+  RUNNING
+  SUCCEEDED
+  FAILED
+}
+
+enum OutboxEventStatus {
+  PENDING
+  DISPATCHED
+  FAILED
+}
+
+enum AiRequestStatus {
+  PENDING
+  SUCCEEDED
+  FAILED
+  REJECTED_SCHEMA
+  BUDGET_EXCEEDED
+  CIRCUIT_OPEN
+}
+
+enum CodeReviewStatus {
+  QUEUED
+  FETCHING_CONTEXT
+  ANALYZING
+  VALIDATING
+  AWAITING_APPROVAL
+  COMPLETED
+  COMPLETED_WITH_WARNINGS
+  PUBLISHED
+  REJECTED
+  FAILED
+  CANCELLED
+  SUPERSEDED
+}
+
+enum ReviewRiskLevel {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+enum FindingSource {
+  DETERMINISTIC
+  AI
+}
+
+enum FindingSeverity {
+  CRITICAL
+  HIGH
+  MEDIUM
+  LOW
+  INFO
+}
+
+enum ReviewFeedbackVote {
+  HELPFUL
+  NOT_HELPFUL
+  FALSE_POSITIVE
+}
+
 // ============================================================================
 // Migration Group 001 — Identity
 // ============================================================================
@@ -66,15 +168,20 @@ model User {
   createdAt       DateTime  @default(now()) @map("created_at") @db.DateTime(3)
   updatedAt       DateTime  @updatedAt @map("updated_at") @db.DateTime(3)
 
-  identities            UserIdentity[]
-  sessions              Session[]
-  refreshTokens         RefreshToken[]
-  createdWorkspaces     Workspace[]           @relation("WorkspaceCreator")
-  workspaceMemberships  WorkspaceMember[]
-  sentInvitations       WorkspaceInvitation[] @relation("InvitationSender")
-  auditLogs             AuditLog[]            @relation("AuditActor")
-  notifications         Notification[]
-  installedGithubApps   GithubInstallation[]  @relation("GithubInstaller")
+  identities           UserIdentity[]
+  sessions             Session[]
+  refreshTokens        RefreshToken[]
+  createdWorkspaces    Workspace[]           @relation("WorkspaceCreator")
+  workspaceMemberships WorkspaceMember[]
+  sentInvitations      WorkspaceInvitation[] @relation("InvitationSender")
+  auditLogs            AuditLog[]            @relation("AuditActor")
+  notifications        Notification[]
+  installedGithubApps  GithubInstallation[]  @relation("GithubInstaller")
+  createdJobs          AnalysisJob[]         @relation("JobCreator")
+  approvedReviews      CodeReview[]          @relation("ReviewApprover")
+  rejectedReviews      CodeReview[]          @relation("ReviewRejector")
+  publishedReviews     CodeReview[]          @relation("ReviewPublisher")
+  reviewFeedbacks      ReviewFeedback[]
 
   @@index([isActive], map: "users_is_active_idx")
   @@map("users")
@@ -159,6 +266,11 @@ model Workspace {
   notifications       Notification[]
   githubInstallations GithubInstallation[]
   repositories        Repository[]
+  githubWebhookEvents GithubWebhookEvent[]
+  analysisJobs        AnalysisJob[]
+  outboxEvents        OutboxEvent[]
+  aiRequests          AiRequest[]
+  aiUsageRecords      AiUsageRecord[]
 
   @@index([createdByUserId], map: "workspaces_created_by_user_id_idx")
   @@map("workspaces")
@@ -389,6 +501,13 @@ model Repository {
   githubInstallation GithubInstallation? @relation(fields: [workspaceId, githubInstallationId], references: [workspaceId, id], onDelete: Restrict, map: "repositories_ws_gh_installation_fkey")
   branches           RepositoryBranch[]
   commits            RepositoryCommit[]
+  pullRequests       PullRequest[]
+  indexes            RepositoryIndex[]
+  files              RepositoryFile[]
+  symbols            CodeSymbol[]
+  chunks             CodeChunk[]
+  dependencies       CodeDependency[]
+  codeReviews        CodeReview[]
 
   @@unique([workspaceId, id], map: "repositories_workspace_id_id_key")
   @@unique([workspaceId, githubRepoId], map: "repositories_workspace_gh_repo_key")
@@ -432,4 +551,490 @@ model RepositoryCommit {
   @@unique([workspaceId, repositoryId, sha], map: "repository_commits_ws_repo_sha_key")
   @@index([workspaceId, repositoryId, committedAt(sort: Desc)], map: "repository_commits_ws_repo_committed_idx")
   @@map("repository_commits")
+}
+
+// ============================================================================
+// Migration Group 006 — GitHub Webhooks and Pull Requests
+// ============================================================================
+
+model GithubWebhookEvent {
+  id                   String                  @id @default(uuid()) @db.Char(36)
+  workspaceId          String?                 @map("workspace_id") @db.Char(36)
+  githubDeliveryId     String                  @unique(map: "github_webhook_events_delivery_id_key") @map("github_delivery_id") @db.VarChar(128)
+  eventName            String                  @map("event_name") @db.VarChar(64)
+  action               String?                 @db.VarChar(64)
+  githubInstallationId BigInt?                 @map("github_installation_id")
+  githubRepoId         BigInt?                 @map("github_repo_id")
+  signatureValid       Boolean                 @map("signature_valid")
+  processingStatus     WebhookProcessingStatus @default(RECEIVED) @map("processing_status")
+  payloadJson          Json                    @map("payload_json")
+  errorMessage         String?                 @map("error_message") @db.VarChar(500)
+  receivedAt           DateTime                @default(now()) @map("received_at") @db.DateTime(3)
+  processedAt          DateTime?               @map("processed_at") @db.DateTime(3)
+
+  workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull, map: "github_webhook_events_workspace_id_fkey")
+
+  @@index([workspaceId, receivedAt(sort: Desc)], map: "github_webhook_events_ws_received_idx")
+  @@index([githubInstallationId], map: "github_webhook_events_gh_install_idx")
+  @@map("github_webhook_events")
+}
+
+model PullRequest {
+  id                String           @id @default(uuid()) @db.Char(36)
+  workspaceId       String           @map("workspace_id") @db.Char(36)
+  repositoryId      String           @map("repository_id") @db.Char(36)
+  githubPrId        BigInt           @map("github_pr_id")
+  prNumber          Int              @map("pr_number")
+  title             String           @db.VarChar(500)
+  description       String?          @db.Text
+  state             PullRequestState @default(OPEN)
+  authorLogin       String           @map("author_login") @db.VarChar(191)
+  baseBranch        String           @map("base_branch") @db.VarChar(255)
+  headBranch        String           @map("head_branch") @db.VarChar(255)
+  baseSha           String           @map("base_sha") @db.Char(40)
+  headSha           String           @map("head_sha") @db.Char(40)
+  isDraft           Boolean          @default(false) @map("is_draft")
+  additions         Int              @default(0)
+  deletions         Int              @default(0)
+  changedFilesCount Int              @default(0) @map("changed_files_count")
+  htmlUrl           String?          @map("html_url") @db.VarChar(500)
+  mergedAt          DateTime?        @map("merged_at") @db.DateTime(3)
+  closedAt          DateTime?        @map("closed_at") @db.DateTime(3)
+  createdAt         DateTime         @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt         DateTime         @updatedAt @map("updated_at") @db.DateTime(3)
+
+  repository Repository        @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "pull_requests_ws_repo_fkey")
+  files      PullRequestFile[]
+  reviews    CodeReview[]
+
+  @@unique([workspaceId, id], map: "pull_requests_workspace_id_id_key")
+  @@unique([workspaceId, repositoryId, prNumber], map: "pull_requests_ws_repo_number_key")
+  @@index([workspaceId, state, createdAt(sort: Desc), id], map: "pull_requests_ws_state_created_idx")
+  @@map("pull_requests")
+}
+
+model PullRequestFile {
+  id               String   @id @default(uuid()) @db.Char(36)
+  workspaceId      String   @map("workspace_id") @db.Char(36)
+  pullRequestId    String   @map("pull_request_id") @db.Char(36)
+  headSha          String   @map("head_sha") @db.Char(40)
+  filePath         String   @map("file_path") @db.VarChar(400)
+  previousFilePath String?  @map("previous_file_path") @db.VarChar(400)
+  status           String   @db.VarChar(32)
+  additions        Int      @default(0)
+  deletions        Int      @default(0)
+  patch            String?  @db.LongText
+  blobSha          String?  @map("blob_sha") @db.VarChar(64)
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  pullRequest PullRequest @relation(fields: [workspaceId, pullRequestId], references: [workspaceId, id], onDelete: Cascade, map: "pull_request_files_ws_pr_fkey")
+
+  @@unique([workspaceId, pullRequestId, headSha, filePath], map: "pull_request_files_ws_pr_sha_path_key")
+  @@index([workspaceId, pullRequestId, headSha], map: "pull_request_files_ws_pr_sha_idx")
+  @@map("pull_request_files")
+}
+
+// ============================================================================
+// Migration Group 007 — Code Intelligence
+// ============================================================================
+
+model RepositoryIndex {
+  id               String                @id @default(uuid()) @db.Char(36)
+  workspaceId      String                @map("workspace_id") @db.Char(36)
+  repositoryId     String                @map("repository_id") @db.Char(36)
+  commitSha        String                @map("commit_sha") @db.Char(40)
+  status           RepositoryIndexStatus @default(QUEUED)
+  filesIndexed     Int                   @default(0) @map("files_indexed")
+  symbolsExtracted Int                   @default(0) @map("symbols_extracted")
+  chunksCreated    Int                   @default(0) @map("chunks_created")
+  s3ArtifactKey    String?               @map("s3_artifact_key") @db.VarChar(500)
+  startedAt        DateTime?             @map("started_at") @db.DateTime(3)
+  completedAt      DateTime?             @map("completed_at") @db.DateTime(3)
+  errorMessage     String?               @map("error_message") @db.Text
+  createdAt        DateTime              @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt        DateTime              @updatedAt @map("updated_at") @db.DateTime(3)
+
+  repository   Repository       @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "repository_indexes_ws_repo_fkey")
+  files        RepositoryFile[]
+  dependencies CodeDependency[]
+
+  @@unique([workspaceId, id], map: "repository_indexes_ws_id_key")
+  @@unique([workspaceId, repositoryId, commitSha], map: "repository_indexes_ws_repo_sha_key")
+  @@index([workspaceId, repositoryId, createdAt(sort: Desc)], map: "repository_indexes_ws_repo_created_idx")
+  @@map("repository_indexes")
+}
+
+model RepositoryFile {
+  id              String   @id @default(uuid()) @db.Char(36)
+  workspaceId     String   @map("workspace_id") @db.Char(36)
+  repositoryId    String   @map("repository_id") @db.Char(36)
+  indexId         String   @map("index_id") @db.Char(36)
+  commitSha       String   @map("commit_sha") @db.Char(40)
+  filePath        String   @map("file_path") @db.VarChar(400)
+  language        String   @db.VarChar(64)
+  sizeBytes       Int      @map("size_bytes")
+  lineCount       Int      @map("line_count")
+  contentHash     String   @map("content_hash") @db.Char(64)
+  contentPreview  String?  @map("content_preview") @db.MediumText
+  s3ObjectKey     String?  @map("s3_object_key") @db.VarChar(500)
+  isExcluded      Boolean  @default(false) @map("is_excluded")
+  exclusionReason String?  @map("exclusion_reason") @db.VarChar(128)
+  createdAt       DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  repository Repository      @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "repository_files_ws_repo_fkey")
+  index      RepositoryIndex @relation(fields: [workspaceId, indexId], references: [workspaceId, id], onDelete: Cascade, map: "repository_files_ws_index_fkey")
+  symbols    CodeSymbol[]
+  chunks     CodeChunk[]
+
+  @@unique([workspaceId, id], map: "repository_files_ws_id_key")
+  @@unique([workspaceId, repositoryId, commitSha, filePath], map: "repository_files_ws_repo_sha_path_key")
+  @@index([workspaceId, indexId], map: "repository_files_ws_index_idx")
+  @@index([workspaceId, repositoryId, language], map: "repository_files_ws_repo_lang_idx")
+  @@map("repository_files")
+}
+
+model CodeSymbol {
+  id           String   @id @default(uuid()) @db.Char(36)
+  workspaceId  String   @map("workspace_id") @db.Char(36)
+  repositoryId String   @map("repository_id") @db.Char(36)
+  fileId       String   @map("file_id") @db.Char(36)
+  commitSha    String   @map("commit_sha") @db.Char(40)
+  filePath     String   @map("file_path") @db.VarChar(400)
+  name         String   @db.VarChar(255)
+  kind         String   @db.VarChar(64)
+  signature    String?  @db.VarChar(500)
+  startLine    Int      @map("start_line")
+  endLine      Int      @map("end_line")
+  exported     Boolean  @default(false)
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  repository Repository     @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "code_symbols_ws_repo_fkey")
+  file       RepositoryFile @relation(fields: [workspaceId, fileId], references: [workspaceId, id], onDelete: Cascade, map: "code_symbols_ws_file_fkey")
+
+  @@index([workspaceId, repositoryId, commitSha, kind], map: "code_symbols_ws_repo_sha_kind_idx")
+  @@index([workspaceId, fileId], map: "code_symbols_ws_file_idx")
+  @@index([workspaceId, repositoryId, name], map: "code_symbols_ws_repo_name_idx")
+  @@map("code_symbols")
+}
+
+model CodeChunk {
+  id            String   @id @default(uuid()) @db.Char(36)
+  workspaceId   String   @map("workspace_id") @db.Char(36)
+  repositoryId  String   @map("repository_id") @db.Char(36)
+  fileId        String   @map("file_id") @db.Char(36)
+  commitSha     String   @map("commit_sha") @db.Char(40)
+  filePath      String   @map("file_path") @db.VarChar(400)
+  chunkIndex    Int      @map("chunk_index")
+  startLine     Int      @map("start_line")
+  endLine       Int      @map("end_line")
+  symbolName    String?  @map("symbol_name") @db.VarChar(255)
+  language      String   @db.VarChar(64)
+  content       String   @db.MediumText
+  tokenEstimate Int      @map("token_estimate")
+  createdAt     DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  repository Repository     @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "code_chunks_ws_repo_fkey")
+  file       RepositoryFile @relation(fields: [workspaceId, fileId], references: [workspaceId, id], onDelete: Cascade, map: "code_chunks_ws_file_fkey")
+
+  @@unique([workspaceId, fileId, chunkIndex], map: "code_chunks_ws_file_chunk_key")
+  @@index([workspaceId, repositoryId, commitSha], map: "code_chunks_ws_repo_sha_idx")
+  @@fulltext([content, filePath, symbolName], map: "code_chunks_content_ft_idx")
+  @@map("code_chunks")
+}
+
+model CodeDependency {
+  id                 String   @id @default(uuid()) @db.Char(36)
+  workspaceId        String   @map("workspace_id") @db.Char(36)
+  repositoryId       String   @map("repository_id") @db.Char(36)
+  indexId            String   @map("index_id") @db.Char(36)
+  commitSha          String   @map("commit_sha") @db.Char(40)
+  sourceFilePath     String   @map("source_file_path") @db.VarChar(400)
+  targetSpecifier    String   @map("target_specifier") @db.VarChar(400)
+  resolvedTargetPath String?  @map("resolved_target_path") @db.VarChar(400)
+  dependencyType     String   @map("dependency_type") @db.VarChar(32)
+  lineNumber         Int      @map("line_number")
+  createdAt          DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  repository Repository      @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "code_dependencies_ws_repo_fkey")
+  index      RepositoryIndex @relation(fields: [workspaceId, indexId], references: [workspaceId, id], onDelete: Cascade, map: "code_dependencies_ws_index_fkey")
+
+  @@index([workspaceId, repositoryId, commitSha], map: "code_dependencies_ws_repo_sha_idx")
+  @@index([workspaceId, indexId], map: "code_dependencies_ws_index_idx")
+  @@map("code_dependencies")
+}
+
+// ============================================================================
+// Migration Group 008 — Job Processing and Transactional Outbox
+// ============================================================================
+
+model AnalysisJob {
+  id              String            @id @default(uuid()) @db.Char(36)
+  workspaceId     String            @map("workspace_id") @db.Char(36)
+  repositoryId    String?           @map("repository_id") @db.Char(36)
+  jobType         AnalysisJobType   @map("job_type")
+  idempotencyKey  String            @map("idempotency_key") @db.VarChar(200)
+  status          AnalysisJobStatus @default(QUEUED)
+  priority        Int               @default(5)
+  payloadJson     Json              @map("payload_json")
+  resultJson      Json?             @map("result_json")
+  attempts        Int               @default(0)
+  maxAttempts     Int               @default(3) @map("max_attempts")
+  workerId        String?           @map("worker_id") @db.VarChar(128)
+  lockedUntil     DateTime?         @map("locked_until") @db.DateTime(3)
+  heartbeatAt     DateTime?         @map("heartbeat_at") @db.DateTime(3)
+  nextRunAt       DateTime          @default(now()) @map("next_run_at") @db.DateTime(3)
+  startedAt       DateTime?         @map("started_at") @db.DateTime(3)
+  completedAt     DateTime?         @map("completed_at") @db.DateTime(3)
+  cancelledAt     DateTime?         @map("cancelled_at") @db.DateTime(3)
+  lastError       String?           @map("last_error") @db.Text
+  createdByUserId String?           @map("created_by_user_id") @db.Char(36)
+  createdAt       DateTime          @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime          @updatedAt @map("updated_at") @db.DateTime(3)
+
+  workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "analysis_jobs_workspace_id_fkey")
+  createdBy    User?        @relation("JobCreator", fields: [createdByUserId], references: [id], onDelete: SetNull, map: "analysis_jobs_created_by_fkey")
+  jobAttempts  JobAttempt[]
+  aiRequests   AiRequest[]
+  codeReviews  CodeReview[]
+
+  @@unique([workspaceId, id], map: "analysis_jobs_ws_id_key")
+  @@unique([workspaceId, idempotencyKey], map: "analysis_jobs_ws_idempotency_key")
+  @@index([status, nextRunAt], map: "analysis_jobs_status_next_run_idx")
+  @@index([workspaceId, createdAt(sort: Desc), id], map: "analysis_jobs_ws_created_idx")
+  @@index([createdByUserId], map: "analysis_jobs_created_by_idx")
+  @@map("analysis_jobs")
+}
+
+model JobAttempt {
+  id            String           @id @default(uuid()) @db.Char(36)
+  workspaceId   String           @map("workspace_id") @db.Char(36)
+  jobId         String           @map("job_id") @db.Char(36)
+  attemptNumber Int              @map("attempt_number")
+  workerId      String           @map("worker_id") @db.VarChar(128)
+  status        JobAttemptStatus @default(RUNNING)
+  errorCode     String?          @map("error_code") @db.VarChar(64)
+  errorMessage  String?          @map("error_message") @db.Text
+  startedAt     DateTime         @default(now()) @map("started_at") @db.DateTime(3)
+  finishedAt    DateTime?        @map("finished_at") @db.DateTime(3)
+  durationMs    Int?             @map("duration_ms")
+
+  job AnalysisJob @relation(fields: [workspaceId, jobId], references: [workspaceId, id], onDelete: Cascade, map: "job_attempts_ws_job_fkey")
+
+  @@index([workspaceId, jobId, attemptNumber], map: "job_attempts_ws_job_attempt_idx")
+  @@map("job_attempts")
+}
+
+model OutboxEvent {
+  id            String            @id @default(uuid()) @db.Char(36)
+  workspaceId   String            @map("workspace_id") @db.Char(36)
+  aggregateType String            @map("aggregate_type") @db.VarChar(64)
+  aggregateId   String            @map("aggregate_id") @db.Char(36)
+  eventType     String            @map("event_type") @db.VarChar(100)
+  dedupeKey     String            @unique(map: "outbox_events_dedupe_key_key") @map("dedupe_key") @db.VarChar(200)
+  payloadJson   Json              @map("payload_json")
+  status        OutboxEventStatus @default(PENDING)
+  attempts      Int               @default(0)
+  nextAttemptAt DateTime          @default(now()) @map("next_attempt_at") @db.DateTime(3)
+  dispatchedAt  DateTime?         @map("dispatched_at") @db.DateTime(3)
+  lastError     String?           @map("last_error") @db.Text
+  createdAt     DateTime          @default(now()) @map("created_at") @db.DateTime(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "outbox_events_workspace_id_fkey")
+
+  @@index([status, nextAttemptAt], map: "outbox_events_status_next_attempt_idx")
+  @@index([workspaceId, createdAt(sort: Desc)], map: "outbox_events_ws_created_idx")
+  @@map("outbox_events")
+}
+
+// ============================================================================
+// Migration Group 009 — AI Infrastructure
+// ============================================================================
+
+model PromptVersion {
+  id               String   @id @default(uuid()) @db.Char(36)
+  promptKey        String   @map("prompt_key") @db.VarChar(100)
+  version          String   @db.VarChar(32)
+  purpose          String   @db.VarChar(64)
+  systemPrompt     String   @map("system_prompt") @db.Text
+  userTemplate     String   @map("user_template") @db.Text
+  outputSchemaName String   @map("output_schema_name") @db.VarChar(100)
+  isActive         Boolean  @default(true) @map("is_active")
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  aiRequests AiRequest[]
+
+  @@unique([promptKey, version], map: "prompt_versions_key_version_key")
+  @@index([purpose, isActive], map: "prompt_versions_purpose_active_idx")
+  @@map("prompt_versions")
+}
+
+model AiRequest {
+  id               String          @id @default(uuid()) @db.Char(36)
+  workspaceId      String          @map("workspace_id") @db.Char(36)
+  repositoryId     String?         @map("repository_id") @db.Char(36)
+  analysisJobId    String?         @map("analysis_job_id") @db.Char(36)
+  promptVersionId  String?         @map("prompt_version_id") @db.Char(36)
+  provider         String          @db.VarChar(64)
+  model            String          @db.VarChar(128)
+  purpose          String          @db.VarChar(64)
+  status           AiRequestStatus @default(PENDING)
+  inputTokens      Int             @default(0) @map("input_tokens")
+  outputTokens     Int             @default(0) @map("output_tokens")
+  totalTokens      Int             @default(0) @map("total_tokens")
+  estimatedCostUsd Decimal         @default(0.000000) @map("estimated_cost_usd") @db.Decimal(12, 6)
+  latencyMs        Int             @default(0) @map("latency_ms")
+  requestHash      String          @map("request_hash") @db.Char(64)
+  errorCode        String?         @map("error_code") @db.VarChar(64)
+  errorMessage     String?         @map("error_message") @db.Text
+  createdAt        DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+
+  workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "ai_requests_workspace_id_fkey")
+  analysisJob   AnalysisJob?   @relation(fields: [workspaceId, analysisJobId], references: [workspaceId, id], onDelete: Restrict, map: "ai_requests_ws_job_fkey")
+  promptVersion PromptVersion? @relation(fields: [promptVersionId], references: [id], onDelete: SetNull, map: "ai_requests_prompt_version_fkey")
+  usageRecord   AiUsageRecord?
+
+  @@index([workspaceId, createdAt(sort: Desc)], map: "ai_requests_ws_created_idx")
+  @@index([workspaceId, analysisJobId], map: "ai_requests_ws_job_idx")
+  @@index([promptVersionId], map: "ai_requests_prompt_version_idx")
+  @@map("ai_requests")
+}
+
+model AiUsageRecord {
+  id            String   @id @default(uuid()) @db.Char(36)
+  workspaceId   String   @map("workspace_id") @db.Char(36)
+  aiRequestId   String   @unique(map: "ai_usage_records_ai_request_id_key") @map("ai_request_id") @db.Char(36)
+  provider      String   @db.VarChar(64)
+  model         String   @db.VarChar(128)
+  purpose       String   @db.VarChar(64)
+  inputTokens   Int      @map("input_tokens")
+  outputTokens  Int      @map("output_tokens")
+  totalTokens   Int      @map("total_tokens")
+  costUsd       Decimal  @map("cost_usd") @db.Decimal(12, 6)
+  billingPeriod String   @map("billing_period") @db.VarChar(7)
+  recordedAt    DateTime @default(now()) @map("recorded_at") @db.DateTime(3)
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "ai_usage_records_workspace_id_fkey")
+  aiRequest AiRequest @relation(fields: [aiRequestId], references: [id], onDelete: Cascade, map: "ai_usage_records_ai_request_id_fkey")
+
+  @@index([workspaceId, billingPeriod, recordedAt(sort: Desc)], map: "ai_usage_records_ws_period_idx")
+  @@map("ai_usage_records")
+}
+
+// ============================================================================
+// Migration Group 010 — Automated Pull Request Reviews
+// ============================================================================
+
+model CodeReview {
+  id                        String           @id @default(uuid()) @db.Char(36)
+  workspaceId               String           @map("workspace_id") @db.Char(36)
+  repositoryId              String           @map("repository_id") @db.Char(36)
+  pullRequestId             String           @map("pull_request_id") @db.Char(36)
+  headSha                   String           @map("head_sha") @db.Char(40)
+  policyVersion             String           @default("v1") @map("policy_version") @db.VarChar(32)
+  status                    CodeReviewStatus @default(QUEUED)
+  analysisJobId             String?          @map("analysis_job_id") @db.Char(36)
+  summaryMarkdown           String?          @map("summary_markdown") @db.MediumText
+  overallRisk               ReviewRiskLevel? @map("overall_risk")
+  findingsCount             Int              @default(0) @map("findings_count")
+  rejectedFindingsCount     Int              @default(0) @map("rejected_findings_count")
+  requiresApproval          Boolean          @default(true) @map("requires_approval")
+  approvedByUserId          String?          @map("approved_by_user_id") @db.Char(36)
+  approvedAt                DateTime?        @map("approved_at") @db.DateTime(3)
+  rejectedByUserId          String?          @map("rejected_by_user_id") @db.Char(36)
+  rejectedAt                DateTime?        @map("rejected_at") @db.DateTime(3)
+  rejectionReason           String?          @map("rejection_reason") @db.VarChar(500)
+  publishedByUserId         String?          @map("published_by_user_id") @db.Char(36)
+  publishedAt               DateTime?        @map("published_at") @db.DateTime(3)
+  githubReviewId            BigInt?          @map("github_review_id")
+  publicationIdempotencyKey String?          @unique(map: "code_reviews_pub_idempotency_key") @map("publication_idempotency_key") @db.VarChar(200)
+  errorMessage              String?          @map("error_message") @db.Text
+  createdAt                 DateTime         @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt                 DateTime         @updatedAt @map("updated_at") @db.DateTime(3)
+
+  repository  Repository      @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "code_reviews_ws_repo_fkey")
+  pullRequest PullRequest     @relation(fields: [workspaceId, pullRequestId], references: [workspaceId, id], onDelete: Cascade, map: "code_reviews_ws_pr_fkey")
+  analysisJob AnalysisJob?    @relation(fields: [workspaceId, analysisJobId], references: [workspaceId, id], onDelete: Restrict, map: "code_reviews_ws_job_fkey")
+  approvedBy  User?           @relation("ReviewApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull, map: "code_reviews_approved_by_fkey")
+  rejectedBy  User?           @relation("ReviewRejector", fields: [rejectedByUserId], references: [id], onDelete: SetNull, map: "code_reviews_rejected_by_fkey")
+  publishedBy User?           @relation("ReviewPublisher", fields: [publishedByUserId], references: [id], onDelete: SetNull, map: "code_reviews_published_by_fkey")
+  findings    ReviewFinding[]
+  comments    ReviewComment[]
+
+  @@unique([workspaceId, id], map: "code_reviews_ws_id_key")
+  @@unique([workspaceId, pullRequestId, headSha, policyVersion], map: "code_reviews_ws_pr_sha_policy_key")
+  @@index([workspaceId, repositoryId, createdAt(sort: Desc)], map: "code_reviews_ws_repo_created_idx")
+  @@index([workspaceId, analysisJobId], map: "code_reviews_ws_job_idx")
+  @@index([approvedByUserId], map: "code_reviews_approved_by_idx")
+  @@index([rejectedByUserId], map: "code_reviews_rejected_by_idx")
+  @@index([publishedByUserId], map: "code_reviews_published_by_idx")
+  @@map("code_reviews")
+}
+
+model ReviewFinding {
+  id              String          @id @default(uuid()) @db.Char(36)
+  workspaceId     String          @map("workspace_id") @db.Char(36)
+  codeReviewId    String          @map("code_review_id") @db.Char(36)
+  fingerprint     String          @db.Char(64)
+  source          FindingSource
+  severity        FindingSeverity
+  category        String          @db.VarChar(64)
+  title           String          @db.VarChar(255)
+  description     String          @db.Text
+  suggestion      String?         @db.Text
+  filePath        String          @map("file_path") @db.VarChar(400)
+  startLine       Int             @map("start_line")
+  endLine         Int             @map("end_line")
+  evidenceSnippet String?         @map("evidence_snippet") @db.Text
+  confidence      Decimal?        @db.Decimal(4, 3)
+  isPublished     Boolean         @default(false) @map("is_published")
+  createdAt       DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+
+  codeReview CodeReview       @relation(fields: [workspaceId, codeReviewId], references: [workspaceId, id], onDelete: Cascade, map: "review_findings_ws_review_fkey")
+  comments   ReviewComment[]
+  feedbacks  ReviewFeedback[]
+
+  @@unique([workspaceId, id], map: "review_findings_ws_id_key")
+  @@unique([workspaceId, codeReviewId, fingerprint], map: "review_findings_ws_review_fp_key")
+  @@index([workspaceId, codeReviewId, severity], map: "review_findings_ws_review_sev_idx")
+  @@map("review_findings")
+}
+
+model ReviewComment {
+  id              String    @id @default(uuid()) @db.Char(36)
+  workspaceId     String    @map("workspace_id") @db.Char(36)
+  codeReviewId    String    @map("code_review_id") @db.Char(36)
+  findingId       String?   @map("finding_id") @db.Char(36)
+  publicationKey  String    @unique(map: "review_comments_publication_key_key") @map("publication_key") @db.VarChar(200)
+  githubCommentId BigInt?   @map("github_comment_id")
+  filePath        String    @map("file_path") @db.VarChar(400)
+  lineNumber      Int       @map("line_number")
+  bodyMarkdown    String    @map("body_markdown") @db.Text
+  publishedAt     DateTime? @map("published_at") @db.DateTime(3)
+  createdAt       DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  codeReview CodeReview     @relation(fields: [workspaceId, codeReviewId], references: [workspaceId, id], onDelete: Cascade, map: "review_comments_ws_review_fkey")
+  finding    ReviewFinding? @relation(fields: [workspaceId, findingId], references: [workspaceId, id], onDelete: Restrict, map: "review_comments_ws_finding_fkey")
+
+  @@index([workspaceId, codeReviewId], map: "review_comments_ws_review_idx")
+  @@index([workspaceId, findingId], map: "review_comments_ws_finding_idx")
+  @@map("review_comments")
+}
+
+model ReviewFeedback {
+  id          String             @id @default(uuid()) @db.Char(36)
+  workspaceId String             @map("workspace_id") @db.Char(36)
+  findingId   String             @map("finding_id") @db.Char(36)
+  userId      String             @map("user_id") @db.Char(36)
+  vote        ReviewFeedbackVote
+  comment     String?            @db.VarChar(500)
+  createdAt   DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt   DateTime           @updatedAt @map("updated_at") @db.DateTime(3)
+
+  finding ReviewFinding @relation(fields: [workspaceId, findingId], references: [workspaceId, id], onDelete: Cascade, map: "review_feedback_ws_finding_fkey")
+  user    User          @relation(fields: [userId], references: [id], onDelete: Cascade, map: "review_feedback_user_id_fkey")
+
+  @@unique([workspaceId, findingId, userId], map: "review_feedback_ws_finding_user_key")
+  @@index([userId], map: "review_feedback_user_id_idx")
+  @@map("review_feedback")
 }

@@ -14,6 +14,10 @@ export async function getWorkspaceAnalyticsOverview(workspaceId: string, userId:
     activeGithubInstallations,
     unreadNotifications,
     recentAuditEventsCount,
+    openPullRequests,
+    completedReviews,
+    totalReviewFindings,
+    activeJobs,
     languageGroups,
     visibilityGroups,
     recentCommits,
@@ -37,6 +41,15 @@ export async function getWorkspaceAnalyticsOverview(workspaceId: string, userId:
     prisma.auditLog.count({
       where: { workspaceId, createdAt: { gte: sevenDaysAgo } },
     }),
+    prisma.pullRequest.count({ where: { workspaceId, state: 'OPEN' } }),
+    prisma.codeReview.count({
+      where: {
+        workspaceId,
+        status: { in: ['AWAITING_APPROVAL', 'COMPLETED', 'COMPLETED_WITH_WARNINGS', 'PUBLISHED'] },
+      },
+    }),
+    prisma.reviewFinding.count({ where: { workspaceId } }),
+    prisma.analysisJob.count({ where: { workspaceId, status: { in: ['QUEUED', 'RUNNING'] } } }),
     prisma.repository.groupBy({
       by: ['primaryLanguage'],
       where: { workspaceId, isActive: true, accessRevokedAt: null },
@@ -80,6 +93,10 @@ export async function getWorkspaceAnalyticsOverview(workspaceId: string, userId:
       activeGithubInstallations,
       unreadNotifications,
       auditEventsLast7Days: recentAuditEventsCount,
+      openPullRequests,
+      completedReviews,
+      totalReviewFindings,
+      activeJobs,
     },
     usage: workspace?.usageLimit
       ? {
@@ -119,8 +136,8 @@ export async function getWorkspaceAnalyticsOverview(workspaceId: string, userId:
     })),
     moduleReadiness: {
       foundation: { status: 'AVAILABLE', phase: 1 },
-      automatedPrReviews: { status: 'PLANNED', phase: 2 },
-      repositoryIndexing: { status: 'PLANNED', phase: 2 },
+      automatedPrReviews: { status: 'AVAILABLE', phase: 2 },
+      repositoryIndexing: { status: 'AVAILABLE', phase: 2 },
       securityScanning: { status: 'PLANNED', phase: 3 },
       architectureAnalysis: { status: 'PLANNED', phase: 3 },
       aiCodingAssistant: { status: 'PLANNED', phase: 3 },
