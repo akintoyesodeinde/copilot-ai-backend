@@ -269,3 +269,104 @@ export async function parseSourceAst(language: string, content: string): Promise
     dependencies: fallback.dependencies,
   };
 }
+
+export interface SyntaxValidationDiagnostic {
+  line: number;
+  column: number;
+  message: string;
+}
+
+/**
+ * Validates generated test source syntax purely via Tree-sitter WASM AST parsing
+ * without ever compiling or executing untrusted code on the API or worker host.
+ */
+export async function validateSourceSyntaxWithTreeSitter(
+  language: string,
+  sourceCode: string,
+): Promise<{
+  engine: 'tree-sitter-wasm' | 'brace-balance-fallback';
+  valid: boolean;
+  diagnostics: SyntaxValidationDiagnostic[];
+}> {
+  try {
+    const tsLang = await getTreeSitterLanguage(language);
+    if (tsLang) {
+      const parser = new Parser();
+      try {
+        parser.setLanguage(tsLang);
+        const tree = parser.parse(sourceCode);
+        if (tree) {
+          const diagnostics: SyntaxValidationDiagnostic[] = [];
+          const visit = (node: SyntaxNode) => {
+            if (node.isError || node.type === 'ERROR') {
+              diagnostics.push({
+                line: node.startPosition.row + 1,
+                column: node.startPosition.column + 1,
+                message: `Syntax error near "${node.text.slice(0, 60).replace(/\s+/g, ' ')}"`,
+              });
+            } else if (node.isMissing) {
+              diagnostics.push({
+                line: node.startPosition.row + 1,
+                column: node.startPosition.column + 1,
+                message: `Missing expected token (${node.type})`,
+              });
+            }
+            if (node.hasError) {
+              for (let i = 0; i < node.childCount; i++) {
+                const child = node.child(i);
+                if (child) visit(child);
+              }
+            }
+          };
+
+          if (tree.rootNode.hasError) {
+            visit(tree.rootNode);
+          }
+          tree.delete();
+          return {
+            engine: 'tree-sitter-wasm',
+            valid: diagnostics.length === 0,
+            diagnostics: diagnostics.slice(0, 20),
+          };
+        }
+      } finally {
+        parser.delete();
+      }
+    }
+  } catch {
+    // Fall back safely below if grammar unavailable
+  }
+
+  // Fallback balanced delimiter check for unsupported languages
+  const stack: string[] = [];
+  const pairs: Record<string, string> = { ')': '(', ']': '[', '}': '{' };
+  const diagnostics: SyntaxValidationDiagnostic[] = [];
+  const lines = sourceCode.split(/\r?\n/);
+  lines.forEach((line, idx) => {
+    for (let col = 0; col < line.length; col++) {
+      const ch = line[col]!;
+      if (ch === '(' || ch === '[' || ch === '{') stack.push(ch);
+      if (ch === ')' || ch === ']' || ch === '}') {
+        if (stack.pop() !== pairs[ch]) {
+          diagnostics.push({
+            line: idx + 1,
+            column: col + 1,
+            message: `Unmatched closing delimiter "${ch}"`,
+          });
+        }
+      }
+    }
+  });
+  if (stack.length > 0) {
+    diagnostics.push({
+      line: lines.length,
+      column: 1,
+      message: `Unclosed delimiter(s): ${stack.join(', ')}`,
+    });
+  }
+  return {
+    engine: 'brace-balance-fallback',
+    valid: diagnostics.length === 0,
+    diagnostics,
+  };
+}

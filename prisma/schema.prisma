@@ -151,6 +151,75 @@ enum ReviewFeedbackVote {
   FALSE_POSITIVE
 }
 
+enum SecurityScanStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum SecurityScannerType {
+  SEMGREP
+  GITLEAKS
+  OSV_SCANNER
+  ESLINT
+  TRIVY
+  AI_ADVISORY
+}
+
+enum VulnerabilitySource {
+  DETERMINISTIC
+  AI_ADVISORY
+}
+
+enum VulnerabilityStatus {
+  OPEN
+  TRIAGED
+  FALSE_POSITIVE
+  RISK_ACCEPTED
+  FIXED
+}
+
+enum ArchitectureScanStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum ArchitectureViolationType {
+  CIRCULAR_DEPENDENCY
+  LAYER_BOUNDARY
+  HIGH_COUPLING
+  ORPHAN_MODULE
+}
+
+enum AiMessageRole {
+  USER
+  ASSISTANT
+  SYSTEM
+}
+
+enum TestGenerationStatus {
+  QUEUED
+  RUNNING
+  COMPLETED
+  FAILED
+}
+
+enum GeneratedTestType {
+  UNIT
+  INTEGRATION
+  REGRESSION
+  SECURITY
+}
+
+enum TestApprovalStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
 // ============================================================================
 // Migration Group 001 — Identity
 // ============================================================================
@@ -180,8 +249,13 @@ model User {
   createdJobs          AnalysisJob[]         @relation("JobCreator")
   approvedReviews      CodeReview[]          @relation("ReviewApprover")
   rejectedReviews      CodeReview[]          @relation("ReviewRejector")
-  publishedReviews     CodeReview[]          @relation("ReviewPublisher")
-  reviewFeedbacks      ReviewFeedback[]
+  publishedReviews      CodeReview[]          @relation("ReviewPublisher")
+  reviewFeedbacks       ReviewFeedback[]
+  triagedVulnerabilities Vulnerability[]      @relation("VulnerabilityTriager")
+  riskAcceptances       RiskAcceptance[]      @relation("RiskAcceptor")
+  aiConversations       AiConversation[]
+  createdTestGenJobs    TestGenerationJob[]   @relation("TestGenCreator")
+  approvedGeneratedTests GeneratedTest[]      @relation("GeneratedTestApprover")
 
   @@index([isActive], map: "users_is_active_idx")
   @@map("users")
@@ -271,6 +345,7 @@ model Workspace {
   outboxEvents        OutboxEvent[]
   aiRequests          AiRequest[]
   aiUsageRecords      AiUsageRecord[]
+  aiConversations     AiConversation[]
 
   @@index([createdByUserId], map: "workspaces_created_by_user_id_idx")
   @@map("workspaces")
@@ -417,8 +492,9 @@ model AuditLog {
   correlationId String       @map("correlation_id") @db.VarChar(64)
   ipAddress     String?      @map("ip_address") @db.VarChar(64)
   userAgent     String?      @map("user_agent") @db.VarChar(512)
-  metadataJson  Json?        @map("metadata_json")
-  createdAt     DateTime     @default(now()) @map("created_at") @db.DateTime(3)
+  metadataJson       Json?        @map("metadata_json")
+  retentionExpiresAt DateTime?    @map("retention_expires_at") @db.DateTime(3)
+  createdAt          DateTime     @default(now()) @map("created_at") @db.DateTime(3)
 
   workspace Workspace? @relation(fields: [workspaceId], references: [id], onDelete: SetNull, map: "audit_logs_workspace_id_fkey")
   actor     User?      @relation("AuditActor", fields: [actorUserId], references: [id], onDelete: SetNull, map: "audit_logs_actor_user_id_fkey")
@@ -426,6 +502,7 @@ model AuditLog {
   @@index([workspaceId, createdAt(sort: Desc), id], map: "audit_logs_workspace_created_id_idx")
   @@index([actorUserId, createdAt(sort: Desc)], map: "audit_logs_actor_created_idx")
   @@index([action, createdAt(sort: Desc)], map: "audit_logs_action_created_idx")
+  @@index([retentionExpiresAt], map: "audit_logs_retention_idx")
   @@map("audit_logs")
 }
 
@@ -508,6 +585,13 @@ model Repository {
   chunks             CodeChunk[]
   dependencies       CodeDependency[]
   codeReviews        CodeReview[]
+  securityScans      SecurityScan[]
+  vulnerabilities    Vulnerability[]
+  dependencyPackages DependencyPackage[]
+  architectureScans  ArchitectureScan[]
+  aiConversations    AiConversation[]
+  testGenerationJobs TestGenerationJob[]
+  generatedTests     GeneratedTest[]
 
   @@unique([workspaceId, id], map: "repositories_workspace_id_id_key")
   @@unique([workspaceId, githubRepoId], map: "repositories_workspace_gh_repo_key")
@@ -569,6 +653,7 @@ model GithubWebhookEvent {
   processingStatus     WebhookProcessingStatus @default(RECEIVED) @map("processing_status")
   payloadJson          Json                    @map("payload_json")
   errorMessage         String?                 @map("error_message") @db.VarChar(500)
+  retentionExpiresAt   DateTime?               @map("retention_expires_at") @db.DateTime(3)
   receivedAt           DateTime                @default(now()) @map("received_at") @db.DateTime(3)
   processedAt          DateTime?               @map("processed_at") @db.DateTime(3)
 
@@ -576,6 +661,7 @@ model GithubWebhookEvent {
 
   @@index([workspaceId, receivedAt(sort: Desc)], map: "github_webhook_events_ws_received_idx")
   @@index([githubInstallationId], map: "github_webhook_events_gh_install_idx")
+  @@index([retentionExpiresAt], map: "github_webhook_events_retention_idx")
   @@map("github_webhook_events")
 }
 
@@ -794,14 +880,18 @@ model AnalysisJob {
 
   workspace    Workspace    @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "analysis_jobs_workspace_id_fkey")
   createdBy    User?        @relation("JobCreator", fields: [createdByUserId], references: [id], onDelete: SetNull, map: "analysis_jobs_created_by_fkey")
-  jobAttempts  JobAttempt[]
-  aiRequests   AiRequest[]
-  codeReviews  CodeReview[]
+  jobAttempts       JobAttempt[]
+  aiRequests        AiRequest[]
+  codeReviews       CodeReview[]
+  securityScans     SecurityScan[]
+  architectureScans ArchitectureScan[]
+  testGenJobs       TestGenerationJob[]
 
   @@unique([workspaceId, id], map: "analysis_jobs_ws_id_key")
   @@unique([workspaceId, idempotencyKey], map: "analysis_jobs_ws_idempotency_key")
   @@index([status, nextRunAt], map: "analysis_jobs_status_next_run_idx")
   @@index([workspaceId, createdAt(sort: Desc), id], map: "analysis_jobs_ws_created_idx")
+  @@index([workspaceId, jobType, status], map: "analysis_jobs_ws_type_status_idx")
   @@index([createdByUserId], map: "analysis_jobs_created_by_idx")
   @@map("analysis_jobs")
 }
@@ -886,17 +976,20 @@ model AiRequest {
   latencyMs        Int             @default(0) @map("latency_ms")
   requestHash      String          @map("request_hash") @db.Char(64)
   errorCode        String?         @map("error_code") @db.VarChar(64)
-  errorMessage     String?         @map("error_message") @db.Text
-  createdAt        DateTime        @default(now()) @map("created_at") @db.DateTime(3)
+  errorMessage       String?         @map("error_message") @db.Text
+  retentionExpiresAt DateTime?       @map("retention_expires_at") @db.DateTime(3)
+  createdAt          DateTime        @default(now()) @map("created_at") @db.DateTime(3)
 
   workspace     Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "ai_requests_workspace_id_fkey")
   analysisJob   AnalysisJob?   @relation(fields: [workspaceId, analysisJobId], references: [workspaceId, id], onDelete: Restrict, map: "ai_requests_ws_job_fkey")
   promptVersion PromptVersion? @relation(fields: [promptVersionId], references: [id], onDelete: SetNull, map: "ai_requests_prompt_version_fkey")
   usageRecord   AiUsageRecord?
+  aiMessages    AiMessage[]
 
   @@index([workspaceId, createdAt(sort: Desc)], map: "ai_requests_ws_created_idx")
   @@index([workspaceId, analysisJobId], map: "ai_requests_ws_job_idx")
   @@index([promptVersionId], map: "ai_requests_prompt_version_idx")
+  @@index([retentionExpiresAt], map: "ai_requests_retention_idx")
   @@map("ai_requests")
 }
 
@@ -964,6 +1057,7 @@ model CodeReview {
   @@unique([workspaceId, id], map: "code_reviews_ws_id_key")
   @@unique([workspaceId, pullRequestId, headSha, policyVersion], map: "code_reviews_ws_pr_sha_policy_key")
   @@index([workspaceId, repositoryId, createdAt(sort: Desc)], map: "code_reviews_ws_repo_created_idx")
+  @@index([workspaceId, status, createdAt(sort: Desc)], map: "code_reviews_ws_status_created_idx")
   @@index([workspaceId, analysisJobId], map: "code_reviews_ws_job_idx")
   @@index([approvedByUserId], map: "code_reviews_approved_by_idx")
   @@index([rejectedByUserId], map: "code_reviews_rejected_by_idx")
@@ -1037,4 +1131,351 @@ model ReviewFeedback {
   @@unique([workspaceId, findingId, userId], map: "review_feedback_ws_finding_user_key")
   @@index([userId], map: "review_feedback_user_id_idx")
   @@map("review_feedback")
+}
+
+// ============================================================================
+// Migration Group 011 — Security Intelligence
+// ============================================================================
+
+model SecurityScan {
+  id              String             @id @default(uuid()) @db.Char(36)
+  workspaceId     String             @map("workspace_id") @db.Char(36)
+  repositoryId    String             @map("repository_id") @db.Char(36)
+  analysisJobId   String?            @map("analysis_job_id") @db.Char(36)
+  commitSha       String             @map("commit_sha") @db.Char(40)
+  status          SecurityScanStatus @default(QUEUED)
+  scannersRunJson Json?              @map("scanners_run_json")
+  findingsCount   Int                @default(0) @map("findings_count")
+  criticalCount   Int                @default(0) @map("critical_count")
+  highCount       Int                @default(0) @map("high_count")
+  mediumCount     Int                @default(0) @map("medium_count")
+  lowCount        Int                @default(0) @map("low_count")
+  summaryJson     Json?              @map("summary_json")
+  startedAt       DateTime?          @map("started_at") @db.DateTime(3)
+  completedAt     DateTime?          @map("completed_at") @db.DateTime(3)
+  errorMessage    String?            @map("error_message") @db.Text
+  createdAt       DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime           @updatedAt @map("updated_at") @db.DateTime(3)
+
+  repository         Repository          @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "security_scans_ws_repo_fkey")
+  analysisJob        AnalysisJob?        @relation(fields: [workspaceId, analysisJobId], references: [workspaceId, id], onDelete: Restrict, map: "security_scans_ws_job_fkey")
+  vulnerabilities    Vulnerability[]
+  dependencyPackages DependencyPackage[]
+
+  @@unique([workspaceId, id], map: "security_scans_ws_id_key")
+  @@index([workspaceId, repositoryId, createdAt(sort: Desc)], map: "security_scans_ws_repo_created_idx")
+  @@index([workspaceId, analysisJobId], map: "security_scans_ws_job_idx")
+  @@map("security_scans")
+}
+
+model Vulnerability {
+  id              String              @id @default(uuid()) @db.Char(36)
+  workspaceId     String              @map("workspace_id") @db.Char(36)
+  repositoryId    String              @map("repository_id") @db.Char(36)
+  securityScanId  String              @map("security_scan_id") @db.Char(36)
+  scanner         SecurityScannerType
+  source          VulnerabilitySource @default(DETERMINISTIC)
+  ruleId          String              @map("rule_id") @db.VarChar(128)
+  cweId           String?             @map("cwe_id") @db.VarChar(32)
+  cveId           String?             @map("cve_id") @db.VarChar(32)
+  owaspCategory   String?             @map("owasp_category") @db.VarChar(64)
+  severity        FindingSeverity
+  status          VulnerabilityStatus @default(OPEN)
+  title           String              @db.VarChar(255)
+  description     String              @db.Text
+  remediation     String?             @db.Text
+  filePath        String              @map("file_path") @db.VarChar(400)
+  startLine       Int                 @map("start_line")
+  endLine         Int                 @map("end_line")
+  redactedSnippet String?             @map("redacted_snippet") @db.Text
+  fingerprint     String              @db.Char(64)
+  triagedByUserId String?             @map("triaged_by_user_id") @db.Char(36)
+  triagedAt       DateTime?           @map("triaged_at") @db.DateTime(3)
+  createdAt       DateTime            @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime            @updatedAt @map("updated_at") @db.DateTime(3)
+
+  repository      Repository       @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "vulnerabilities_ws_repo_fkey")
+  securityScan    SecurityScan     @relation(fields: [workspaceId, securityScanId], references: [workspaceId, id], onDelete: Cascade, map: "vulnerabilities_ws_scan_fkey")
+  triagedBy       User?            @relation("VulnerabilityTriager", fields: [triagedByUserId], references: [id], onDelete: SetNull, map: "vulnerabilities_triaged_by_fkey")
+  riskAcceptances RiskAcceptance[]
+
+  @@unique([workspaceId, id], map: "vulnerabilities_ws_id_key")
+  @@unique([workspaceId, securityScanId, fingerprint], map: "vulnerabilities_ws_scan_fp_key")
+  @@index([workspaceId, repositoryId, severity], map: "vulnerabilities_ws_repo_sev_idx")
+  @@index([workspaceId, status, severity, createdAt(sort: Desc)], map: "vulnerabilities_ws_status_sev_idx")
+  @@index([triagedByUserId], map: "vulnerabilities_triaged_by_idx")
+  @@map("vulnerabilities")
+}
+
+model DependencyPackage {
+  id              String           @id @default(uuid()) @db.Char(36)
+  workspaceId     String           @map("workspace_id") @db.Char(36)
+  repositoryId    String           @map("repository_id") @db.Char(36)
+  securityScanId  String           @map("security_scan_id") @db.Char(36)
+  ecosystem       String           @db.VarChar(64)
+  packageName     String           @map("package_name") @db.VarChar(255)
+  version         String           @db.VarChar(64)
+  manifestPath    String           @map("manifest_path") @db.VarChar(400)
+  isDirect        Boolean          @default(true) @map("is_direct")
+  advisoryCount   Int              @default(0) @map("advisory_count")
+  highestSeverity FindingSeverity? @map("highest_severity")
+  fixedVersion    String?          @map("fixed_version") @db.VarChar(64)
+  createdAt       DateTime         @default(now()) @map("created_at") @db.DateTime(3)
+
+  repository   Repository   @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "dependency_packages_ws_repo_fkey")
+  securityScan SecurityScan @relation(fields: [workspaceId, securityScanId], references: [workspaceId, id], onDelete: Cascade, map: "dependency_packages_ws_scan_fkey")
+
+  @@index([workspaceId, securityScanId], map: "dependency_packages_ws_scan_idx")
+  @@index([workspaceId, repositoryId, packageName], map: "dependency_packages_ws_repo_pkg_idx")
+  @@map("dependency_packages")
+}
+
+model RiskAcceptance {
+  id                 String    @id @default(uuid()) @db.Char(36)
+  workspaceId        String    @map("workspace_id") @db.Char(36)
+  vulnerabilityId    String    @map("vulnerability_id") @db.Char(36)
+  acceptedByUserId   String?   @map("accepted_by_user_id") @db.Char(36)
+  reason             String    @db.Text
+  mitigatingControls String?   @map("mitigating_controls") @db.Text
+  expiresAt          DateTime  @map("expires_at") @db.DateTime(3)
+  revokedAt          DateTime? @map("revoked_at") @db.DateTime(3)
+  createdAt          DateTime  @default(now()) @map("created_at") @db.DateTime(3)
+
+  vulnerability Vulnerability @relation(fields: [workspaceId, vulnerabilityId], references: [workspaceId, id], onDelete: Cascade, map: "risk_acceptances_ws_vuln_fkey")
+  acceptedBy    User?         @relation("RiskAcceptor", fields: [acceptedByUserId], references: [id], onDelete: SetNull, map: "risk_acceptances_accepted_by_fkey")
+
+  @@index([workspaceId, vulnerabilityId], map: "risk_acceptances_ws_vuln_idx")
+  @@index([acceptedByUserId], map: "risk_acceptances_accepted_by_idx")
+  @@map("risk_acceptances")
+}
+
+// ============================================================================
+// Migration Group 012 — Architecture Intelligence
+// ============================================================================
+
+model ArchitectureScan {
+  id                 String                 @id @default(uuid()) @db.Char(36)
+  workspaceId        String                 @map("workspace_id") @db.Char(36)
+  repositoryId       String                 @map("repository_id") @db.Char(36)
+  analysisJobId      String?                @map("analysis_job_id") @db.Char(36)
+  commitSha          String                 @map("commit_sha") @db.Char(40)
+  status             ArchitectureScanStatus @default(QUEUED)
+  nodesCount         Int                    @default(0) @map("nodes_count")
+  edgesCount         Int                    @default(0) @map("edges_count")
+  circularDepsCount  Int                    @default(0) @map("circular_deps_count")
+  violationsCount    Int                    @default(0) @map("violations_count")
+  orphanModulesCount Int                    @default(0) @map("orphan_modules_count")
+  metricsJson        Json?                  @map("metrics_json")
+  startedAt          DateTime?              @map("started_at") @db.DateTime(3)
+  completedAt        DateTime?              @map("completed_at") @db.DateTime(3)
+  errorMessage       String?                @map("error_message") @db.Text
+  createdAt          DateTime               @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt          DateTime               @updatedAt @map("updated_at") @db.DateTime(3)
+
+  repository  Repository              @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "architecture_scans_ws_repo_fkey")
+  analysisJob AnalysisJob?            @relation(fields: [workspaceId, analysisJobId], references: [workspaceId, id], onDelete: Restrict, map: "architecture_scans_ws_job_fkey")
+  nodes       ArchitectureNode[]
+  edges       ArchitectureEdge[]
+  violations  ArchitectureViolation[]
+
+  @@unique([workspaceId, id], map: "architecture_scans_ws_id_key")
+  @@index([workspaceId, repositoryId, createdAt(sort: Desc)], map: "architecture_scans_ws_repo_created_idx")
+  @@index([workspaceId, analysisJobId], map: "architecture_scans_ws_job_idx")
+  @@map("architecture_scans")
+}
+
+model ArchitectureNode {
+  id          String   @id @default(uuid()) @db.Char(36)
+  workspaceId String   @map("workspace_id") @db.Char(36)
+  scanId      String   @map("scan_id") @db.Char(36)
+  nodeKey     String   @map("node_key") @db.VarChar(400)
+  label       String   @db.VarChar(255)
+  filePath    String   @map("file_path") @db.VarChar(400)
+  layer       String   @db.VarChar(64)
+  moduleGroup String   @map("module_group") @db.VarChar(128)
+  language    String   @db.VarChar(64)
+  linesOfCode Int      @default(0) @map("lines_of_code")
+  fanIn       Int      @default(0) @map("fan_in")
+  fanOut      Int      @default(0) @map("fan_out")
+  instability Decimal  @default(0.0000) @db.Decimal(5, 4)
+  isOrphan    Boolean  @default(false) @map("is_orphan")
+  isHotspot   Boolean  @default(false) @map("is_hotspot")
+  createdAt   DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  scan          ArchitectureScan   @relation(fields: [workspaceId, scanId], references: [workspaceId, id], onDelete: Cascade, map: "architecture_nodes_ws_scan_fkey")
+  outgoingEdges ArchitectureEdge[] @relation("ArchEdgeSource")
+  incomingEdges ArchitectureEdge[] @relation("ArchEdgeTarget")
+
+  @@unique([workspaceId, id], map: "architecture_nodes_ws_id_key")
+  @@unique([workspaceId, scanId, nodeKey], map: "architecture_nodes_ws_scan_key_key")
+  @@index([workspaceId, scanId, layer], map: "architecture_nodes_ws_scan_layer_idx")
+  @@map("architecture_nodes")
+}
+
+model ArchitectureEdge {
+  id           String   @id @default(uuid()) @db.Char(36)
+  workspaceId  String   @map("workspace_id") @db.Char(36)
+  scanId       String   @map("scan_id") @db.Char(36)
+  sourceNodeId String   @map("source_node_id") @db.Char(36)
+  targetNodeId String   @map("target_node_id") @db.Char(36)
+  edgeType     String   @default("import") @map("edge_type") @db.VarChar(32)
+  isCircular   Boolean  @default(false) @map("is_circular")
+  isViolation  Boolean  @default(false) @map("is_violation")
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  scan       ArchitectureScan @relation(fields: [workspaceId, scanId], references: [workspaceId, id], onDelete: Cascade, map: "architecture_edges_ws_scan_fkey")
+  sourceNode ArchitectureNode @relation("ArchEdgeSource", fields: [workspaceId, sourceNodeId], references: [workspaceId, id], onDelete: Cascade, map: "architecture_edges_ws_source_fkey")
+  targetNode ArchitectureNode @relation("ArchEdgeTarget", fields: [workspaceId, targetNodeId], references: [workspaceId, id], onDelete: Cascade, map: "architecture_edges_ws_target_fkey")
+
+  @@index([workspaceId, scanId], map: "architecture_edges_ws_scan_idx")
+  @@index([workspaceId, sourceNodeId], map: "architecture_edges_ws_source_idx")
+  @@index([workspaceId, targetNodeId], map: "architecture_edges_ws_target_idx")
+  @@map("architecture_edges")
+}
+
+model ArchitectureViolation {
+  id             String                    @id @default(uuid()) @db.Char(36)
+  workspaceId    String                    @map("workspace_id") @db.Char(36)
+  scanId         String                    @map("scan_id") @db.Char(36)
+  violationType  ArchitectureViolationType @map("violation_type")
+  severity       FindingSeverity
+  ruleName       String                    @map("rule_name") @db.VarChar(128)
+  message        String                    @db.Text
+  sourcePath     String                    @map("source_path") @db.VarChar(400)
+  targetPath     String?                   @map("target_path") @db.VarChar(400)
+  cyclePathsJson Json?                     @map("cycle_paths_json")
+  createdAt      DateTime                  @default(now()) @map("created_at") @db.DateTime(3)
+
+  scan ArchitectureScan @relation(fields: [workspaceId, scanId], references: [workspaceId, id], onDelete: Cascade, map: "architecture_violations_ws_scan_fkey")
+
+  @@index([workspaceId, scanId, violationType], map: "architecture_violations_ws_scan_type_idx")
+  @@map("architecture_violations")
+}
+
+// ============================================================================
+// Migration Group 013 — Repository-Aware AI Assistant Conversations
+// ============================================================================
+
+model AiConversation {
+  id           String   @id @default(uuid()) @db.Char(36)
+  workspaceId  String   @map("workspace_id") @db.Char(36)
+  repositoryId String?  @map("repository_id") @db.Char(36)
+  commitSha    String?  @map("commit_sha") @db.Char(40)
+  userId       String   @map("user_id") @db.Char(36)
+  title        String   @db.VarChar(200)
+  createdAt    DateTime @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt    DateTime @updatedAt @map("updated_at") @db.DateTime(3)
+
+  workspace  Workspace   @relation(fields: [workspaceId], references: [id], onDelete: Cascade, map: "ai_conversations_workspace_id_fkey")
+  repository Repository? @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "ai_conversations_ws_repo_fkey")
+  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade, map: "ai_conversations_user_id_fkey")
+  messages   AiMessage[]
+
+  @@unique([workspaceId, id], map: "ai_conversations_ws_id_key")
+  @@index([workspaceId, userId, updatedAt(sort: Desc)], map: "ai_conversations_ws_user_updated_idx")
+  @@index([workspaceId, repositoryId], map: "ai_conversations_ws_repo_idx")
+  @@index([userId], map: "ai_conversations_user_id_idx")
+  @@map("ai_conversations")
+}
+
+model AiMessage {
+  id             String        @id @default(uuid()) @db.Char(36)
+  workspaceId    String        @map("workspace_id") @db.Char(36)
+  conversationId String        @map("conversation_id") @db.Char(36)
+  role           AiMessageRole
+  content        String        @db.MediumText
+  citationsJson  Json?         @map("citations_json")
+  aiRequestId    String?       @map("ai_request_id") @db.Char(36)
+  tokensUsed     Int           @default(0) @map("tokens_used")
+  createdAt      DateTime      @default(now()) @map("created_at") @db.DateTime(3)
+
+  conversation AiConversation @relation(fields: [workspaceId, conversationId], references: [workspaceId, id], onDelete: Cascade, map: "ai_messages_ws_conv_fkey")
+  aiRequest    AiRequest?     @relation(fields: [aiRequestId], references: [id], onDelete: SetNull, map: "ai_messages_ai_request_fkey")
+
+  @@index([workspaceId, conversationId, createdAt], map: "ai_messages_ws_conv_created_idx")
+  @@index([aiRequestId], map: "ai_messages_ai_request_idx")
+  @@map("ai_messages")
+}
+
+// ============================================================================
+// Migration Group 014 — AI Automated Test Generation
+// ============================================================================
+
+model TestGenerationJob {
+  id              String               @id @default(uuid()) @db.Char(36)
+  workspaceId     String               @map("workspace_id") @db.Char(36)
+  repositoryId    String               @map("repository_id") @db.Char(36)
+  analysisJobId   String?              @map("analysis_job_id") @db.Char(36)
+  commitSha       String               @map("commit_sha") @db.Char(40)
+  targetFilePath  String               @map("target_file_path") @db.VarChar(400)
+  language        String               @db.VarChar(64)
+  framework       String               @db.VarChar(64)
+  testTypesJson   Json                 @map("test_types_json")
+  status          TestGenerationStatus @default(QUEUED)
+  createdByUserId String?              @map("created_by_user_id") @db.Char(36)
+  errorMessage    String?              @map("error_message") @db.Text
+  createdAt       DateTime             @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt       DateTime             @updatedAt @map("updated_at") @db.DateTime(3)
+  completedAt     DateTime?            @map("completed_at") @db.DateTime(3)
+
+  repository     Repository      @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "test_generation_jobs_ws_repo_fkey")
+  analysisJob    AnalysisJob?    @relation(fields: [workspaceId, analysisJobId], references: [workspaceId, id], onDelete: Restrict, map: "test_generation_jobs_ws_job_fkey")
+  createdBy      User?           @relation("TestGenCreator", fields: [createdByUserId], references: [id], onDelete: SetNull, map: "test_generation_jobs_created_by_fkey")
+  generatedTests GeneratedTest[]
+
+  @@unique([workspaceId, id], map: "test_generation_jobs_ws_id_key")
+  @@index([workspaceId, repositoryId, createdAt(sort: Desc)], map: "test_generation_jobs_ws_repo_created_idx")
+  @@index([workspaceId, analysisJobId], map: "test_generation_jobs_ws_job_idx")
+  @@index([createdByUserId], map: "test_generation_jobs_created_by_idx")
+  @@map("test_generation_jobs")
+}
+
+model GeneratedTest {
+  id                     String             @id @default(uuid()) @db.Char(36)
+  workspaceId            String             @map("workspace_id") @db.Char(36)
+  testGenerationJobId    String             @map("test_generation_job_id") @db.Char(36)
+  repositoryId           String             @map("repository_id") @db.Char(36)
+  targetFilePath         String             @map("target_file_path") @db.VarChar(400)
+  suggestedTestPath      String             @map("suggested_test_path") @db.VarChar(400)
+  language               String             @db.VarChar(64)
+  framework              String             @db.VarChar(64)
+  testType               GeneratedTestType  @map("test_type")
+  title                  String             @db.VarChar(255)
+  testCode               String             @map("test_code") @db.MediumText
+  boundaryConditionsJson Json?              @map("boundary_conditions_json")
+  syntaxValid            Boolean            @default(false) @map("syntax_valid")
+  syntaxErrorsJson       Json?              @map("syntax_errors_json")
+  approvalStatus         TestApprovalStatus @default(PENDING) @map("approval_status")
+  approvedByUserId       String?            @map("approved_by_user_id") @db.Char(36)
+  approvedAt             DateTime?          @map("approved_at") @db.DateTime(3)
+  createdAt              DateTime           @default(now()) @map("created_at") @db.DateTime(3)
+  updatedAt              DateTime           @updatedAt @map("updated_at") @db.DateTime(3)
+
+  testGenerationJob TestGenerationJob     @relation(fields: [workspaceId, testGenerationJobId], references: [workspaceId, id], onDelete: Cascade, map: "generated_tests_ws_job_fkey")
+  repository        Repository            @relation(fields: [workspaceId, repositoryId], references: [workspaceId, id], onDelete: Cascade, map: "generated_tests_ws_repo_fkey")
+  approvedBy        User?                 @relation("GeneratedTestApprover", fields: [approvedByUserId], references: [id], onDelete: SetNull, map: "generated_tests_approved_by_fkey")
+  executionResults  TestExecutionResult[]
+
+  @@unique([workspaceId, id], map: "generated_tests_ws_id_key")
+  @@index([workspaceId, testGenerationJobId], map: "generated_tests_ws_job_idx")
+  @@index([workspaceId, repositoryId, approvalStatus], map: "generated_tests_ws_repo_approval_idx")
+  @@index([approvedByUserId], map: "generated_tests_approved_by_idx")
+  @@map("generated_tests")
+}
+
+model TestExecutionResult {
+  id               String   @id @default(uuid()) @db.Char(36)
+  workspaceId      String   @map("workspace_id") @db.Char(36)
+  generatedTestId  String   @map("generated_test_id") @db.Char(36)
+  validationEngine String   @map("validation_engine") @db.VarChar(64)
+  syntaxPassed     Boolean  @map("syntax_passed")
+  diagnosticsJson  Json?    @map("diagnostics_json")
+  sandboxExecuted  Boolean  @default(false) @map("sandbox_executed")
+  summary          String   @db.VarChar(500)
+  createdAt        DateTime @default(now()) @map("created_at") @db.DateTime(3)
+
+  generatedTest GeneratedTest @relation(fields: [workspaceId, generatedTestId], references: [workspaceId, id], onDelete: Cascade, map: "test_execution_results_ws_test_fkey")
+
+  @@index([workspaceId, generatedTestId], map: "test_execution_results_ws_test_idx")
+  @@map("test_execution_results")
 }

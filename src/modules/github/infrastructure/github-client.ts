@@ -723,6 +723,72 @@ export class FixtureGithubGateway implements GithubGateway {
         content: SYNTHETIC_CURRENCY_TS,
       },
       {
+        filePath: 'src/domain/ledger-rules.ts',
+        content: [
+          `import { findLedgerEntry } from '../infrastructure/sql-ledger-repo';`,
+          `import { roundCents } from '../ledger/currency';`,
+          '',
+          'export interface LedgerTransferRule {',
+          '  maxCents: number;',
+          '  currency: string;',
+          '}',
+          '',
+          'export function validateLedgerTransfer(accountId: string, amountCents: number): boolean {',
+          '  const normalized = roundCents(amountCents);',
+          '  const record = findLedgerEntry(accountId);',
+          '  return normalized > 0 && Boolean(record);',
+          '}',
+        ].join('\n'),
+      },
+      {
+        filePath: 'src/infrastructure/sql-ledger-repo.ts',
+        content: [
+          `import { type LedgerTransferRule } from '../domain/ledger-rules';`,
+          '',
+          'const SYNTHETIC_AUDIT_KEY = "AKIAIOSFODNN7EXAMPLE";',
+          '',
+          'export function findLedgerEntry(accountId: string, rule?: LedgerTransferRule) {',
+          '  const query = `SELECT * FROM ledger_entries WHERE account_id = "${accountId}"`;',
+          '  return { query, auditKeyLen: SYNTHETIC_AUDIT_KEY.length, rule };',
+          '}',
+        ].join('\n'),
+      },
+      {
+        filePath: 'src/presentation/transfer-route.ts',
+        content: [
+          `import { executeLedgerTransfer } from '../ledger/transfer-service';`,
+          `import { validateLedgerTransfer } from '../domain/ledger-rules';`,
+          '',
+          'export function handleTransferRequest(accountId: string, amountCents: number) {',
+          '  if (!validateLedgerTransfer(accountId, amountCents)) {',
+          '    return { status: 400 };',
+          '  }',
+          '  return { status: 200, transfer: executeLedgerTransfer };',
+          '}',
+        ].join('\n'),
+      },
+      {
+        filePath: 'package.json',
+        content: JSON.stringify(
+          {
+            name: 'payments-ledger-service',
+            version: '1.2.0',
+            dependencies: {
+              lodash: '4.17.19',
+              zod: '^4.6.7',
+            },
+          },
+          null,
+          2,
+        ),
+      },
+      {
+        filePath: 'Dockerfile',
+        content: ['FROM node:latest', 'WORKDIR /app', 'COPY . .', 'CMD ["node", "index.js"]'].join(
+          '\n',
+        ),
+      },
+      {
         filePath: 'node_modules/ignored-pkg/index.js',
         content: 'module.exports = {};',
       },

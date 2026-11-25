@@ -18,6 +18,8 @@ function buildAdapter(databaseUrl: string): PrismaMariaDb {
     password: decodeURIComponent(parsed.password),
     database: parsed.pathname.replace(/^\//, ''),
     connectionLimit: 10,
+    connectTimeout: 30_000,
+    acquireTimeout: 30_000,
     allowPublicKeyRetrieval: !useTls,
     ssl: useTls ? { rejectUnauthorized: sslMode === 'verify_identity' } : undefined,
   });

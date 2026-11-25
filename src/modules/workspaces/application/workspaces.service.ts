@@ -128,56 +128,59 @@ export async function createWorkspace(
     throw new ConflictError(`Workspace slug '${slug}' is already taken`, 'WORKSPACE_SLUG_TAKEN');
   }
 
-  const created = await prisma.$transaction(async (tx) => {
-    const workspace = await tx.workspace.create({
-      data: {
-        name: input.name.trim(),
-        slug,
-        description: input.description?.trim() ?? null,
-        createdByUserId: userId,
-      },
-    });
+  const created = await prisma.$transaction(
+    async (tx) => {
+      const workspace = await tx.workspace.create({
+        data: {
+          name: input.name.trim(),
+          slug,
+          description: input.description?.trim() ?? null,
+          createdByUserId: userId,
+        },
+      });
 
-    await tx.workspaceMember.create({
-      data: {
-        workspaceId: workspace.id,
-        userId,
-        roleKey: ROLE_KEYS.WORKSPACE_OWNER,
-        status: 'ACTIVE',
-      },
-    });
+      await tx.workspaceMember.create({
+        data: {
+          workspaceId: workspace.id,
+          userId,
+          roleKey: ROLE_KEYS.WORKSPACE_OWNER,
+          status: 'ACTIVE',
+        },
+      });
 
-    const settings = await tx.workspaceSetting.create({
-      data: {
-        workspaceId: workspace.id,
-        defaultAiProvider: 'mock',
-        allowedAiProvidersJson: ['mock'],
-        requireHumanApproval: true,
-        autoReviewEnabled: false,
-        dataRetentionDays: 90,
-      },
-    });
+      const settings = await tx.workspaceSetting.create({
+        data: {
+          workspaceId: workspace.id,
+          defaultAiProvider: 'mock',
+          allowedAiProvidersJson: ['mock'],
+          requireHumanApproval: true,
+          autoReviewEnabled: false,
+          dataRetentionDays: 90,
+        },
+      });
 
-    const usageLimit = await tx.usageLimit.create({
-      data: {
-        workspaceId: workspace.id,
-      },
-    });
+      const usageLimit = await tx.usageLimit.create({
+        data: {
+          workspaceId: workspace.id,
+        },
+      });
 
-    await tx.notification.create({
-      data: {
-        workspaceId: workspace.id,
-        userId,
-        type: 'workspace.welcome',
-        severity: 'INFO',
-        title: `Workspace "${workspace.name}" is ready`,
-        body: 'Configure workspace settings, invite engineering team members, and prepare GitHub integration.',
-        linkPath: '/settings',
-      },
-    });
+      await tx.notification.create({
+        data: {
+          workspaceId: workspace.id,
+          userId,
+          type: 'workspace.welcome',
+          severity: 'INFO',
+          title: `Workspace "${workspace.name}" is ready`,
+          body: 'Configure workspace settings, invite engineering team members, and prepare GitHub integration.',
+          linkPath: '/settings',
+        },
+      });
 
-    return { workspace, settings, usageLimit };
-  });
+      return { workspace, settings, usageLimit };
+    },
+    { maxWait: 15_000, timeout: 25_000 },
+  );
 
   await recordAuditEvent({
     workspaceId: created.workspace.id,

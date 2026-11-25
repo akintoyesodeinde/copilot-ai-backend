@@ -74,28 +74,31 @@ async function createSessionWithRefreshToken(
   const refreshExpiresAt = new Date(now + env.REFRESH_TOKEN_TTL_DAYS * 24 * 60 * 60 * 1000);
   const familyId = crypto.randomUUID();
 
-  await prisma.$transaction(async (tx) => {
-    const session = await tx.session.create({
-      data: {
-        userId,
-        sessionTokenHash: sha256Hex(sessionToken),
-        csrfTokenHash: sha256Hex(csrfToken),
-        ipAddress: ctx.ipAddress,
-        userAgent: ctx.userAgent,
-        expiresAt: sessionExpiresAt,
-      },
-    });
+  await prisma.$transaction(
+    async (tx) => {
+      const session = await tx.session.create({
+        data: {
+          userId,
+          sessionTokenHash: sha256Hex(sessionToken),
+          csrfTokenHash: sha256Hex(csrfToken),
+          ipAddress: ctx.ipAddress,
+          userAgent: ctx.userAgent,
+          expiresAt: sessionExpiresAt,
+        },
+      });
 
-    await tx.refreshToken.create({
-      data: {
-        sessionId: session.id,
-        userId,
-        tokenHash: sha256Hex(refreshToken),
-        familyId,
-        expiresAt: refreshExpiresAt,
-      },
-    });
-  });
+      await tx.refreshToken.create({
+        data: {
+          sessionId: session.id,
+          userId,
+          tokenHash: sha256Hex(refreshToken),
+          familyId,
+          expiresAt: refreshExpiresAt,
+        },
+      });
+    },
+    { maxWait: 15_000, timeout: 25_000 },
+  );
 
   return {
     sessionToken,

@@ -32,6 +32,7 @@
     "src/**/*.tsx",
     "prisma/**/*.ts",
     "tests/**/*.ts",
+    "evals/**/*.ts",
     "prisma.config.ts",
     "vitest.config.ts",
     ".next/types/**/*.ts",

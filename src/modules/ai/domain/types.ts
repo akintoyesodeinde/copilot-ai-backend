@@ -73,7 +73,8 @@ export function redactSensitiveContent(input: string): string {
 const PROMPT_INJECTION_PATTERNS = [
   /ignore\s+(?:all\s+)?(?:previous|prior|above)\s+instructions/i,
   /disregard\s+(?:the\s+)?system\s+prompt/i,
-  /approve\s+this\s+pr\s+with\s+no\s+findings/i,
+  /reveal\s+(?:the\s+)?system\s+prompt/i,
+  /approve\s+this\s+pr\s+with\s+(?:no|zero)\s+findings/i,
   /return\s+an?\s+empty\s+findings\s+array/i,
   /exfiltrate\s+(?:secrets|tokens|env|credentials)/i,
   /override\s+security\s+policy/i,

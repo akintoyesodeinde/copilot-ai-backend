@@ -23,7 +23,10 @@
     "test:unit": "vitest run tests/unit --outputFile.junit=test-results/unit-junit.xml",
     "test:integration": "vitest run tests/integration --outputFile.junit=test-results/integration-junit.xml",
     "test:authz": "vitest run tests/authorization --outputFile.junit=test-results/authz-junit.xml",
-    "test:phase2": "vitest run tests/phase2 --outputFile.junit=test-results/phase2-junit.xml"
+    "test:phase2": "vitest run tests/phase2 --outputFile.junit=test-results/phase2-junit.xml",
+    "test:phase3": "vitest run tests/phase3 --outputFile.junit=test-results/phase3-junit.xml",
+    "eval:ai": "tsx evals/run-evals.ts",
+    "sbom": "npm sbom --sbom-format=cyclonedx --omit=dev > test-results/sbom-cyclonedx.json"
   },
   "dependencies": {
     "@aws-sdk/client-bedrock-runtime": "^3.1177.0",

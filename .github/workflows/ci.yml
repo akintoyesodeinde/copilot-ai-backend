@@ -97,8 +97,19 @@ jobs:
       - name: Run Phase 2 GitHub, worker, indexing, AI & review tests
         run: npm run test:phase2
 
+      - name: Run Phase 3 security, architecture, assistant, test studio & analytics tests
+        run: npm run test:phase3
+
+      - name: Run deterministic AI evaluation suite
+        run: npm run eval:ai
+
       - name: Dependency vulnerability scan
         run: npm audit --omit=dev --audit-level=high
+
+      - name: Generate CycloneDX SBOM
+        run: |
+          mkdir -p test-results
+          npm sbom --sbom-format=cyclonedx --omit=dev > test-results/sbom-cyclonedx.json
 
       - name: Build production Next.js application
         env:

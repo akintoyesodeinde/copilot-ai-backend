@@ -11,6 +11,10 @@ import {
 import { executeRepoSyncJob } from '@/modules/github/application/github.service';
 import { executeRepoIndexJob } from '@/modules/indexing/application/indexing.service';
 import { executePullRequestReviewJob } from '@/modules/reviews/application/review-engine.service';
+import { executeSecurityScanJob } from '@/modules/security/application/security.service';
+import { executeArchitectureScanJob } from '@/modules/architecture/application/architecture.service';
+import { executeTestGenerationJob } from '@/modules/test-generation/application/test-generation.service';
+import type { LayerBoundaryRule } from '@/modules/architecture/domain/graph-analyzer';
 
 export type CustomJobHandler = (
   payload: Record<string, unknown>,
@@ -134,6 +138,29 @@ export async function processAnalysisJobById(
         headSha: String(payload.headSha),
         policyVersion: String(payload.policyVersion ?? 'v1'),
         analysisJobId: job.id,
+      });
+    } else if (job.jobType === 'SECURITY_SCAN') {
+      result = await executeSecurityScanJob({
+        workspaceId: job.workspaceId,
+        repositoryId: String(payload.repositoryId),
+        securityScanId: payload.securityScanId ? String(payload.securityScanId) : undefined,
+        commitSha: payload.commitSha ? String(payload.commitSha) : undefined,
+      });
+    } else if (job.jobType === 'ARCHITECTURE_SCAN') {
+      result = await executeArchitectureScanJob({
+        workspaceId: job.workspaceId,
+        repositoryId: String(payload.repositoryId),
+        architectureScanId: payload.architectureScanId
+          ? String(payload.architectureScanId)
+          : undefined,
+        commitSha: payload.commitSha ? String(payload.commitSha) : undefined,
+        customRules: (payload.customRules as LayerBoundaryRule[] | null | undefined) ?? null,
+      });
+    } else if (job.jobType === 'TEST_GENERATION') {
+      result = await executeTestGenerationJob({
+        workspaceId: job.workspaceId,
+        repositoryId: String(payload.repositoryId),
+        testGenerationJobId: String(payload.testGenerationJobId),
       });
     } else {
       throw new Error(`Unsupported job type: ${job.jobType}`);

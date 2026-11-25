@@ -855,6 +855,275 @@ export function getOpenApiSpec(): OpenApi31Document {
           responses: { '200': { description: 'AI usage summary' } },
         },
       },
+      '/api/v1/repositories/{id}/security-scans': {
+        get: {
+          tags: ['Security'],
+          summary: 'List security scan runs for a repository',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Security scans list' } },
+        },
+        post: {
+          tags: ['Security'],
+          summary:
+            'Schedule an asynchronous deterministic security scan (Semgrep, Gitleaks, OSV, ESLint, Trivy)',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '202': { description: 'Security scan queued' } },
+        },
+      },
+      '/api/v1/security/vulnerabilities': {
+        get: {
+          tags: ['Security'],
+          summary:
+            'List workspace vulnerabilities with severity, scanner, status, and source filters',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam, ...paginationParams],
+          responses: { '200': { description: 'Cursor-paginated vulnerabilities' } },
+        },
+      },
+      '/api/v1/security/vulnerabilities/{id}': {
+        get: {
+          tags: ['Security'],
+          summary: 'Retrieve vulnerability details, redacted snippet, and risk acceptances',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Vulnerability detail' } },
+        },
+        patch: {
+          tags: ['Security'],
+          summary: 'Triage vulnerability status (OPEN, TRIAGED, FALSE_POSITIVE, FIXED)',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Vulnerability triaged' } },
+        },
+      },
+      '/api/v1/security/vulnerabilities/{id}/risk-acceptance': {
+        post: {
+          tags: ['Security'],
+          summary: 'Create a time-bound risk acceptance (requires WORKSPACE_OWNER)',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: {
+            '201': { description: 'Risk acceptance recorded' },
+            '403': problemResponseRef('Forbidden (requires WORKSPACE_OWNER)'),
+          },
+        },
+      },
+      '/api/v1/repositories/{id}/architecture-scans': {
+        post: {
+          tags: ['Architecture'],
+          summary: 'Schedule an asynchronous software architecture dependency graph scan',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '202': { description: 'Architecture scan queued' } },
+        },
+      },
+      '/api/v1/repositories/{id}/architecture/graph': {
+        get: {
+          tags: ['Architecture'],
+          summary:
+            'Retrieve latest module dependency graph nodes, edges, layers, and coupling metrics',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Architecture dependency graph' } },
+        },
+      },
+      '/api/v1/repositories/{id}/architecture/violations': {
+        get: {
+          tags: ['Architecture'],
+          summary: 'List circular dependencies, layer boundary violations, hotspots, and orphans',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Architecture violations list' } },
+        },
+      },
+      '/api/v1/ai/conversations': {
+        get: {
+          tags: ['AI Assistant'],
+          summary:
+            'List repository-aware advisory AI conversations for the current user and workspace',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam],
+          responses: { '200': { description: 'Conversations list' } },
+        },
+        post: {
+          tags: ['AI Assistant'],
+          summary: 'Create a repository-scoped advisory AI conversation',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [workspaceHeaderParam],
+          responses: { '201': { description: 'Conversation created' } },
+        },
+      },
+      '/api/v1/ai/conversations/{id}': {
+        get: {
+          tags: ['AI Assistant'],
+          summary: 'Retrieve conversation messages and verified file/line citations',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Conversation detail' } },
+        },
+      },
+      '/api/v1/ai/conversations/{id}/messages': {
+        post: {
+          tags: ['AI Assistant'],
+          summary: 'Send a prompt to the strictly advisory repository-aware AI assistant',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '201': { description: 'Advisory response with verified citations' } },
+        },
+      },
+      '/api/v1/ai/conversations/{id}/events': {
+        get: {
+          tags: ['AI Assistant'],
+          summary: 'Server-Sent Events (SSE) stream for assistant tokens and verified citations',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'text/event-stream SSE response' } },
+        },
+      },
+      '/api/v1/ai/explain-code': {
+        post: {
+          tags: ['AI Assistant'],
+          summary: 'Generate an advisory explanation for an indexed repository file or line range',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [workspaceHeaderParam],
+          responses: {
+            '200': { description: 'Advisory code explanation with verified citations' },
+          },
+        },
+      },
+      '/api/v1/ai/suggest-refactoring': {
+        post: {
+          tags: ['AI Assistant'],
+          summary: 'Generate advisory refactoring recommendations for an indexed repository file',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [workspaceHeaderParam],
+          responses: { '200': { description: 'Advisory refactoring suggestions' } },
+        },
+      },
+      '/api/v1/repositories/{id}/test-generation': {
+        post: {
+          tags: ['AI Test Studio'],
+          summary:
+            'Schedule asynchronous AI test generation with Tree-sitter WASM syntax validation (zero host execution)',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '202': { description: 'Test generation job queued' } },
+        },
+      },
+      '/api/v1/test-generation/jobs': {
+        get: {
+          tags: ['AI Test Studio'],
+          summary: 'List workspace test generation jobs',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam],
+          responses: { '200': { description: 'Test generation jobs list' } },
+        },
+      },
+      '/api/v1/test-generation/jobs/{id}': {
+        get: {
+          tags: ['AI Test Studio'],
+          summary:
+            'Inspect generated test code, boundary conditions, syntax diagnostics, and approval state',
+          security: [{ sessionCookie: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Test generation job detail' } },
+        },
+      },
+      '/api/v1/generated-tests/{id}': {
+        patch: {
+          tags: ['AI Test Studio'],
+          summary: 'Approve or reject a generated test file suggestion',
+          security: [{ sessionCookie: [], csrfToken: [] }],
+          parameters: [
+            { name: 'id', in: 'path', required: true, schema: { type: 'string', format: 'uuid' } },
+            workspaceHeaderParam,
+          ],
+          responses: { '200': { description: 'Generated test approval updated' } },
+        },
+      },
+      '/api/v1/analytics/code-quality': {
+        get: {
+          tags: ['Analytics'],
+          summary:
+            'Deterministic code quality, coupling, instability, and transparent code health metrics',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam],
+          responses: { '200': { description: 'Code quality analytics' } },
+        },
+      },
+      '/api/v1/analytics/security': {
+        get: {
+          tags: ['Analytics'],
+          summary:
+            'Security posture, vulnerability severities, scanner breakdown, and dependency advisories',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam],
+          responses: { '200': { description: 'Security analytics' } },
+        },
+      },
+      '/api/v1/analytics/review-performance': {
+        get: {
+          tags: ['Analytics'],
+          summary:
+            'Automated PR review throughput, finding feedback precision, AI latency, and spend',
+          security: [{ sessionCookie: [] }],
+          parameters: [workspaceHeaderParam, workspaceQueryParam],
+          responses: { '200': { description: 'Review performance analytics' } },
+        },
+      },
+      '/api/v1/admin/overview': {
+        get: {
+          tags: ['Platform Admin'],
+          summary:
+            'Platform Administrator operational overview (strictly aggregated non-code telemetry; zero tenant code access)',
+          security: [{ sessionCookie: [] }],
+          responses: {
+            '200': { description: 'Platform operational overview' },
+            '403': problemResponseRef('Forbidden (requires PLATFORM_ADMIN)'),
+          },
+        },
+      },
     },
   };
 }
